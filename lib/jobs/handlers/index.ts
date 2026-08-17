@@ -1,5 +1,8 @@
 import { registerHandler } from '../registry';
+import { classifyHooks } from './classify-hooks';
+import { computeFeatures } from './compute-features';
 import { discoverCompetitors } from './discover-competitors';
+import { runAnalysis } from './run-analysis';
 import { scanAccount } from './scan';
 import { scanHashtag } from './scan-hashtag';
 
@@ -16,4 +19,7 @@ export function registerJobHandlers(): void {
   registerHandler('scan_account', scanAccount);
   registerHandler('scan_hashtag', scanHashtag);
   registerHandler('discover_competitors', discoverCompetitors);
+  registerHandler('compute_features', computeFeatures);
+  registerHandler('classify_hooks', classifyHooks);
+  registerHandler('run_analysis', runAnalysis);
 }

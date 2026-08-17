@@ -198,8 +198,105 @@ silently returning a`Job`whose`maxAttempts`was`undefined`, which made
 
 ---
 
+## Stage 4 — analysis engine, verified
+
+The core deliverable of the whole build, and the one the spec asks to be
+held to the highest bar: "the evidence-reconciliation check... passes before
+this stage is considered done." It does — see below.
+
+- **Layer A (deterministic, unit-tested)**: `lib/analysis/features.ts` —
+  ported from the legacy build with `Date` in place of unix-epoch integers.
+  Per-post features (hook text, hashtag/mention/emoji counts, CTA and
+  question detection via regex, posting hour/day, follower-normalized
+  engagement rate) and `markOutliers()` (a post's own trailing median ×
+  multiplier — "my winners" relative to _this account's_ history, not an
+  absolute threshold that would never fire for a small account).
+- **Layer B (per-post Gemini classification)**: `lib/analysis/hooks.ts` +
+  `lib/prompts/hook-classification.v1.ts` classify every post's opening line
+  into one of a **fixed** 10-category taxonomy (question, bold_claim,
+  curiosity_gap, controversy, personal_story, how_to, listicle,
+  before_after, relatable_pain_point, other) — a deliberate choice: an
+  open-ended taxonomy would give every post its own one-off label and
+  nothing would aggregate into "51% use X, you use it 20%". One Gemini call
+  per post, exactly as the spec asks. `classify_hooks`
+  (`lib/jobs/handlers/classify-hooks.ts`) processes 5 posts per tick then
+  yields — no checkpoint needed between ticks, since "the next unclassified
+  post" is itself the durable state, held in `hook_labels`.
+- **Layer C (deterministic pattern engine + validated LLM phrasing)**:
+  `lib/analysis/patterns.ts`'s `computePatterns()` is pure and
+  fixture-free-testable — 5 dimensions (dominant hook category, dominant
+  format, dominant posting-hour bucket, CTA presence, question presence),
+  each measured on the **top quartile of competitor posts by engagement**
+  (never the account's own posts — "what works in the niche" can't be
+  defined by the account being benchmarked against it) vs. the account's own
+  rate, ranked by absolute percentage-point delta. `patterns[0]` **is** "the
+  single biggest gap" — not a separate computation, so it can never
+  disagree with the pattern list by construction.
+- **The receipts are real, not decorative.** Every pattern's `nichePostIds`/
+  `myPostIds` are the _specific_ posts satisfying that pattern's predicate
+  (the numerator, not just the denominator) — `lib/analysis/reconcile.ts`'s
+  `reconcilePatterns()` re-derives each pattern's predicate from its `key`
+  independently (`predicateForKey`, the same function `computePatterns` used
+  to build it) and checks three things per pattern: every listed post id
+  exists in the corpus, every listed post id actually satisfies the
+  predicate, and the stored stat matches `postIds.length / sampleSize`
+  recomputed from scratch. `tests/reconcile.test.ts` proves each of the
+  three checks actually fires on tampered data, not just that a clean
+  pattern set passes.
+- **The claim sentence never lets the model's arithmetic be the source of
+  truth.** `lib/analysis/gap.ts`'s `phraseClaims()` asks Gemini to phrase
+  one sentence per pattern (the "one Tier A call over the compact
+  aggregates" shape from the legacy build's design, carried forward), but
+  validates every returned claim actually cites both rounded percentages
+  (±1 point) before trusting it — a claim that fails validation, or a model
+  call that fails/returns malformed JSON entirely, falls back to a
+  deterministic template that states the exact numbers. `tests/gap-analysis.test.ts`
+  covers all three paths: a valid LLM claim used as-is, an invalid one
+  (invented numbers) replaced per-claim, and a total call failure falling
+  back for every pattern.
+- **Back-catalogue mining is fully deterministic** (`lib/analysis/back-catalog.ts`,
+  no model call): groups the self account's posts by hook category, finds
+  each category's best-ever ("outlier") post, and flags categories whose
+  most recent post is older than the stale threshold — "your DM-funnel reel
+  hit 552K, you haven't made one like it in 30 days" is exactly this shape.
+  `persistBackCatalog()` clears the account's prior `resurfaced_posts` rows
+  before writing new ones — proven idempotent in `tests/back-catalog.test.ts`,
+  since a naive insert-only version would accumulate duplicates on every
+  analysis run.
+- **The job chain (`compute_features` → `classify_hooks` → `run_analysis`)
+  is tested by driving it through the actual queue** (`enqueue()`/`runTick()`,
+  never calling handler functions directly) in
+  `tests/analysis-job-chain.test.ts` — the spec specifically calls out the
+  job pipeline as "the part most likely to break silently on Vercel's
+  function-timeout model," so this is deliberately not a shortcut around
+  that risk.
+- **Verified against a real dev server + Postgres**: scanned `@testaccount`,
+  ticked the queue repeatedly, and confirmed features and hook labels were
+  computed for the self account. `run_analysis` correctly stayed `pending`
+  with a `JobYield`-driven wait rather than failing, since fixture mode
+  can't produce data for the newly-discovered competitor handles (no
+  fixture files exist for them) — `InsufficientData` is handled as a
+  30-second retry, not an error, which is the correct behavior for "not
+  enough data exists yet" as distinct from "something is broken." The
+  full successful-completion path (patterns computed, reconciled, and
+  persisted end to end) is covered by seeding real competitor data in
+  `tests/gap-analysis.test.ts` and `tests/analysis-job-chain.test.ts`
+  instead, rather than hand-writing six more competitor fixture files for
+  one manual run.
+
+---
+
 ## Deviations from the spec
 
+- **The 5 pattern dimensions and the fixed 10-category hook taxonomy are
+  interpretive choices, not spec requirements.** The spec says "identify 5
+  patterns... whatever the data supports" without naming them; hook
+  category, format, posting-hour bucket, CTA presence, and question
+  presence are what the currently-scanned data (captions + timestamps +
+  engagement, no transcription) actually supports. The hook taxonomy is
+  similarly a judgment call — a fixed enum was chosen deliberately over an
+  open vocabulary specifically so percentages aggregate meaningfully; see
+  the Stage 4 log above.
 - **`eslint-config-next` ships a native flat-config export** in the
   installed version (16.3.1) — `eslint-config-next/core-web-vitals` is
   already an ESLint 9 flat-config array. The `@eslint/eslintrc`
