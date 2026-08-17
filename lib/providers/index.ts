@@ -1,6 +1,9 @@
 import { env } from '../env';
+import { ApifyScraper } from './scraper/apify';
+import { FixtureScraper } from './scraper/fixture';
 import { FakeScraper } from './scraper/fake';
 import { FakeTranscriber, UnavailableTranscriber } from './transcription/fake';
+import { WhisperTranscriber } from './transcription/whisper';
 import { NoneImageProvider } from './image/none';
 import { PollinationsImageProvider } from './image/pollinations';
 import { getEmbedder, getTierA, getTierB } from './llm';
@@ -18,11 +21,19 @@ export * from './types';
  */
 
 export function getScraper(): ScraperProvider {
-  const mode = env().SCRAPE_MODE;
-  if (mode === 'fake') return new FakeScraper();
-  // `live` and `fixture` resolve to the Apify provider at M1; until then the
-  // fake is the only honest answer.
-  return new FakeScraper();
+  const e = env();
+  switch (e.SCRAPE_MODE) {
+    case 'fake':
+      return new FakeScraper();
+    case 'fixture':
+      return new FixtureScraper();
+    case 'live':
+      return new ApifyScraper({
+        token: e.APIFY_TOKEN ?? '',
+        actor: e.APIFY_ACTOR,
+        monthlyAllowanceUsd: e.APIFY_MONTHLY_CREDIT_USD,
+      });
+  }
 }
 
 export function getImageProvider(): ImageProvider {
@@ -32,11 +43,15 @@ export function getImageProvider(): ImageProvider {
 }
 
 export function getTranscriber(): TranscriptionProvider {
-  if (!env().ENABLE_TRANSCRIPTION) {
+  const e = env();
+  if (!e.ENABLE_TRANSCRIPTION) {
     return new UnavailableTranscriber('ENABLE_TRANSCRIPTION=false');
   }
-  // Real whisper.cpp subprocess lands at M2; the fake keeps the pipeline whole.
-  return new FakeTranscriber();
+  if (e.SCRAPE_MODE === 'fake') return new FakeTranscriber();
+  return new WhisperTranscriber({
+    ...(e.WHISPER_BIN ? { binary: e.WHISPER_BIN } : {}),
+    ...(e.WHISPER_MODEL_PATH ? { modelPath: e.WHISPER_MODEL_PATH } : {}),
+  });
 }
 
 export interface ProviderStatus extends ProviderDescriptor {

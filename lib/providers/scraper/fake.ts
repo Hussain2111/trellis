@@ -66,7 +66,9 @@ export class FakeScraper implements ScraperProvider {
     const nowS = Math.floor(Date.now() / 1000);
 
     for (let i = 0; i < request.limit; i++) {
-      const shortcode = `FAKE${request.handle.slice(0, 4).toUpperCase()}${String(i).padStart(4, '0')}`;
+      // Keyed on a hash of the full handle: truncating the handle made
+      // different competitors collide on the unique shortcode index.
+      const shortcode = `FAKE${hash(request.handle).toString(36).toUpperCase().slice(0, 6)}${String(i).padStart(4, '0')}`;
       if (request.stopAtShortcodes?.has(shortcode)) break;
 
       const archetype = Math.floor(rng() * ARCHETYPE_HOOKS.length);

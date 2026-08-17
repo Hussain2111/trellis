@@ -4,20 +4,17 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
-/**
- * Every route in the spec is listed from the start, with the milestone that
- * fills it in. A nav that hides unfinished work makes the build feel further
- * along than it is.
- */
-const ROUTES: { href: string; label: string; milestone?: string }[] = [
+/** The cockpit. Ordered by how the pipeline actually runs, not alphabetically. */
+const ROUTES: { href: string; label: string }[] = [
   { href: '/', label: 'Dashboard' },
-  { href: '/posts', label: 'Posts', milestone: 'M1' },
-  { href: '/competitors', label: 'Competitors', milestone: 'M3' },
-  { href: '/archetypes', label: 'Archetypes', milestone: 'M4' },
-  { href: '/gap', label: 'Gap', milestone: 'M5' },
-  { href: '/drafts', label: 'Drafts', milestone: 'M7' },
-  { href: '/calendar', label: 'Calendar', milestone: 'M10' },
-  { href: '/chat', label: 'Chat', milestone: 'M8' },
+  { href: '/posts', label: 'Posts' },
+  { href: '/competitors', label: 'Competitors' },
+  { href: '/archetypes', label: 'Archetypes' },
+  { href: '/gap', label: 'Gap' },
+  { href: '/voice', label: 'Voice' },
+  { href: '/drafts', label: 'Drafts' },
+  { href: '/calendar', label: 'Calendar' },
+  { href: '/chat', label: 'Chat' },
   { href: '/settings', label: 'Settings' },
 ];
 
@@ -47,9 +44,6 @@ export function Nav(): React.JSX.Element {
               />
               {route.label}
             </span>
-            {route.milestone ? (
-              <span className="font-mono text-[10px] text-ink-faint/70">{route.milestone}</span>
-            ) : null}
           </Link>
         );
       })}

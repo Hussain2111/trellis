@@ -25,7 +25,7 @@ export default function RootLayout({
             </div>
             <Nav />
             <div className="mt-auto px-4 py-3 text-[11px] text-ink-faint">
-              <span className="metric">M0</span> · scaffold
+              no login · binds to localhost
             </div>
           </aside>
           <main className="min-w-0 flex-1">{children}</main>

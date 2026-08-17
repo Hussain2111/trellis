@@ -47,7 +47,8 @@ export class FakeLlm implements LlmProvider {
   }> {
     this.calls.push(request);
     const queued = this.queued.shift();
-    const text = queued ?? (request.schema ? JSON.stringify(sample(request.schema)) : echo(request));
+    const text =
+      queued ?? (request.schema ? JSON.stringify(sampleSchema(request.schema)) : echo(request));
     return {
       text,
       promptTokens: Math.ceil((request.prompt.length + (request.system?.length ?? 0)) / 4),
@@ -108,53 +109,96 @@ function echo(request: CompleteRequest<unknown>): string {
   return `[fake:${request.operation}] ${request.prompt.slice(0, 120)}`;
 }
 
-/** Build a minimal value satisfying a zod schema, so validation always passes. */
-function sample(schema: z.ZodType<unknown>, depth = 0): unknown {
-  if (depth > 6) return null;
-  const def = (schema as unknown as { def: { type: string } }).def;
+/**
+ * Build a value that satisfies a zod schema, via its JSON Schema projection.
+ *
+ * Going through `z.toJSONSchema` rather than poking at zod internals means the
+ * constraints that actually matter here — exact array lengths, minimum string
+ * lengths, enums — are all visible, so the fake produces output that passes the
+ * same validation the real providers face. A fake that only satisfies the
+ * *shape* would let a schema regression through untested.
+ */
+export function sampleSchema(schema: z.ZodType<unknown>): unknown {
+  try {
+    return fromJsonSchema(z.toJSONSchema(schema, { io: 'output' }) as JsonSchema);
+  } catch {
+    return null;
+  }
+}
 
-  switch (def.type) {
-    case 'string':
-      return 'fake';
-    case 'number':
-    case 'int':
-      return 1;
+interface JsonSchema {
+  type?: string | string[];
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema | JsonSchema[];
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  enum?: unknown[];
+  const?: unknown;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
+  allOf?: JsonSchema[];
+  format?: string;
+}
+
+function fromJsonSchema(node: JsonSchema, depth = 0): unknown {
+  if (depth > 8) return null;
+
+  if (node.const !== undefined) return node.const;
+  if (node.enum?.length) return node.enum[0];
+
+  const branch = node.anyOf ?? node.oneOf;
+  if (branch?.length) {
+    // Prefer a non-null branch so optional/nullable fields carry a real value.
+    const preferred = branch.find((b) => b.type !== 'null') ?? branch[0]!;
+    return fromJsonSchema(preferred, depth + 1);
+  }
+  if (node.allOf?.length) {
+    return Object.assign(
+      {},
+      ...node.allOf.map((b) => fromJsonSchema(b, depth + 1) as object),
+    ) as unknown;
+  }
+
+  const type = Array.isArray(node.type) ? node.type.find((t) => t !== 'null') : node.type;
+
+  switch (type) {
+    case 'string': {
+      const min = node.minLength ?? 0;
+      const base = 'fake text for offline testing';
+      let out = base;
+      while (out.length < min) out += ` ${base}`;
+      return node.maxLength ? out.slice(0, node.maxLength) : out;
+    }
+    case 'integer':
+    case 'number': {
+      const min = node.minimum ?? 1;
+      const max = node.maximum ?? Math.max(min, 1);
+      return Math.min(Math.max(1, min), max);
+    }
     case 'boolean':
       return true;
-    case 'literal':
-      return (schema as unknown as { def: { values: unknown[] } }).def.values[0];
-    case 'enum': {
-      const entries = (schema as unknown as { def: { entries: Record<string, unknown> } }).def
-        .entries;
-      return Object.values(entries)[0];
-    }
     case 'array': {
-      const element = (schema as unknown as { def: { element: z.ZodType<unknown> } }).def.element;
-      const checks = (schema as unknown as { def: { checks?: { _zod: { def: { minimum?: number } } }[] } })
-        .def.checks;
-      const min = checks?.find((c) => c._zod.def.minimum !== undefined)?._zod.def.minimum ?? 1;
-      return Array.from({ length: Math.max(1, min) }, () => sample(element, depth + 1));
+      const items = Array.isArray(node.items) ? node.items[0] : node.items;
+      const count = Math.max(node.minItems ?? 1, 1);
+      return Array.from({ length: node.maxItems ? Math.min(count, node.maxItems) : count }, () =>
+        items ? fromJsonSchema(items, depth + 1) : null,
+      );
     }
     case 'object': {
-      const shape = (schema as unknown as { def: { shape: Record<string, z.ZodType<unknown>> } }).def
-        .shape;
       const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(shape)) out[key] = sample(value, depth + 1);
+      for (const [key, value] of Object.entries(node.properties ?? {})) {
+        out[key] = fromJsonSchema(value, depth + 1);
+      }
       return out;
     }
-    case 'optional':
-    case 'nullable':
-    case 'default': {
-      const inner = (schema as unknown as { def: { innerType: z.ZodType<unknown> } }).def.innerType;
-      return sample(inner, depth + 1);
-    }
-    case 'union': {
-      const options = (schema as unknown as { def: { options: z.ZodType<unknown>[] } }).def.options;
-      return sample(options[0]!, depth + 1);
-    }
-    case 'record':
-      return {};
-    default:
+    case 'null':
       return null;
+    default:
+      return node.properties ? fromJsonSchema({ ...node, type: 'object' }, depth) : null;
   }
 }

@@ -1,3 +1,10 @@
+import { scanAccount } from './handlers/scan';
+import { computeFeatures, transcribeReels } from './handlers/features';
+import { clusterPosts, embedPosts } from './handlers/embed';
+import { runAnalysis } from './handlers/analysis';
+import { buildVoiceProfile, generateDrafts } from './handlers/generate';
+import { renderSlides } from './handlers/render';
+import { publishDue, refreshIgToken } from './handlers/publish';
 import { parsePayload, type JobContext, type JobHandler, type JobType } from './types';
 
 const handlers = new Map<JobType, JobHandler>();
@@ -14,10 +21,19 @@ export function registeredTypes(): JobType[] {
   return [...handlers.keys()];
 }
 
-/**
- * Handlers are registered here, one import per milestone. M0 ships only the
- * no-op so the queue can be exercised end to end before anything real exists.
- */
+register('scan_account', scanAccount);
+register('compute_features', computeFeatures);
+register('transcribe_reels', transcribeReels);
+register('embed_posts', embedPosts);
+register('cluster_posts', clusterPosts);
+register('run_analysis', runAnalysis);
+register('build_voice_profile', buildVoiceProfile);
+register('generate_drafts', generateDrafts);
+register('render_slides', renderSlides);
+register('publish_due', publishDue);
+register('refresh_ig_token', refreshIgToken);
+
+/** Exercised by `worker --selftest` and the queue tests. */
 register('noop', async (ctx: JobContext<'noop'>) => {
   const { steps, sleepMs } = ctx.payload;
   const start = typeof ctx.checkpoint === 'number' ? ctx.checkpoint : 0;

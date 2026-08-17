@@ -7,8 +7,11 @@ receipts behind every claim. Runs locally, costs nothing.
 Single user, single account, no login. `npm run dev` and the first route is the
 dashboard.
 
-**Status: M0 (scaffold).** See [`docs/setup.md`](docs/setup.md) to run it and
-[`NOTES.md`](NOTES.md) for measurements and deviations.
+All eleven milestones are built. The whole pipeline runs offline against fakes —
+`npm run seed:demo` proves it with no network, no credits and no API keys.
+See [`docs/setup.md`](docs/setup.md) to run it on your own data and
+[`NOTES.md`](NOTES.md) for measurements, deviations, and what has not yet
+touched a real service.
 
 ## The two constraints everything else follows from
 
@@ -58,16 +61,27 @@ machine, long jobs *will* be interrupted; they resume.
 |---|---|
 | `npm run dev` | Web + worker |
 | `npm run bench:llm` | Measure this machine, pick the local model, write `NOTES.md` |
+| `npm run seed:demo` | Run the entire pipeline on synthetic data, offline, free |
 | `npm run db:migrate` | Apply migrations |
 | `npm run db:generate` | Generate a migration after a schema change |
 | `npm test` | Tests on the deterministic layer |
 | `npm run typecheck` | `tsc --noEmit` |
 
-## Milestones
+## The pipeline
 
-`M0` scaffold · `M1` ingest · `M2` features + transcription · `M3` competitors ·
-`M4` clustering · `M5` gap analysis · `M6` voice · `M7` drafts · `M8` chat ·
-`M9` slides · `M10` scheduling · `M11` publishing
+Scan → features → transcribe → embed → cluster → name → analyse → voice →
+draft → render → schedule → publish.
 
-Each one stands alone. Routes for later milestones exist in the nav and say which
-milestone fills them in, rather than pretending to work.
+Everything up to `analyse` is free and local. Only four steps ever spend the
+rationed cloud tier: naming the archetypes (one call), the gap analysis (one
+call), the voice profile (one call), and drafts (three or four per call).
+
+## Two things worth knowing before you start
+
+**Run the benchmark first.** `npm run bench:llm` measures what your machine
+actually does and writes the numbers into `NOTES.md`. Prefill speed — not
+generation — is what decides everything about how this is configured.
+
+**Leave `SCRAPE_MODE=fixture` while you're poking at it.** The first live scrape
+of an account is saved to `./fixtures/`, and fixture mode replays it forever at
+zero credit cost. Apify credits are the only genuinely finite resource here.

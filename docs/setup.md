@@ -97,7 +97,7 @@ public — if you would rather those never leave the machine, set
 `LOCAL_ONLY_VOICE_AND_CHAT=true` (or flip the switch in Settings). The writing
 will be noticeably worse; that is the trade.
 
-## 5. Apify token (from M1)
+## 5. Apify token
 
 Free plan, ~$5/month of credits ≈ 3,300 posts. Verify the current terms when you
 sign up — they move.
@@ -112,6 +112,21 @@ written to `./fixtures/`, and fixture mode replays the whole pipeline offline at
 zero credit cost. You will iterate on the analysis dozens of times and should not
 pay for it each time.
 
+## 5b. Try it with no data at all
+
+```bash
+npm run seed:demo
+```
+
+Builds a synthetic account plus six competitors and runs the whole pipeline —
+scan, features, embeddings, clustering, gap analysis, voice profile, drafts —
+with every provider faked. No network, no credits, no keys. Useful for seeing
+the shape of the thing before your own data is in, and for checking nothing is
+broken after a change.
+
+It writes to the same `./data/app.db`, so delete that file before scanning your
+real account.
+
 ## 6. Run it
 
 ```bash
@@ -125,13 +140,26 @@ behind a four-minute model call.
 
 There is no login. The first route is the dashboard.
 
-## 7. Later milestones
+## 7. Optional extras
 
-- **Transcription (M2)** needs a `whisper.cpp` binary and a `base.en` model.
-  Point `WHISPER_BIN` and `WHISPER_MODEL_PATH` at them. If they are missing the
-  app degrades to caption-only analysis and says so in the UI.
-- **Publishing (M11)** needs a Meta app and a linked Facebook Page. That gets its
-  own document, `docs/instagram-setup.md`, written before the code.
+- **Transcription** needs both a `whisper.cpp` binary (`WHISPER_BIN`, with a
+  `base.en` model at `WHISPER_MODEL_PATH`) **and `ffmpeg` on PATH** — ffmpeg is
+  what trims the clip to its first 15 seconds and converts it to the 16 kHz mono
+  WAV whisper wants. If either is missing the queue skips cleanly and the app
+  falls back to caption-only analysis, saying so in the UI rather than failing.
+
+  ```
+  winget install Gyan.FFmpeg
+  ```
+
+  It is worth having: reel hooks are spoken or on-screen, so caption-only
+  clustering is guessing at exactly the format that matters most. The queue is
+  capped at the top ~150 reels by engagement because the bottleneck is
+  downloading video on a laptop connection, not the transcription.
+
+- **Publishing** needs a Meta app and a linked Facebook Page. Follow
+  [`instagram-setup.md`](instagram-setup.md). You do not need it — manual mode
+  works today with no Meta account at all.
 
 ## Cost check
 
