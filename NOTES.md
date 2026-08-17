@@ -382,6 +382,89 @@ this stage is considered done." It does — see below.
 
 ---
 
+## Stage 7 — chat coach, verified
+
+- **Streaming, not the job queue.** Every other model call in this build
+  goes through a job handler because it can outlive a single HTTP request.
+  A chat turn can't wait behind that — the user is watching it type — so
+  `app/api/chat/route.ts` talks to the AI SDK's `streamText` directly over
+  a raw provider model (`lib/providers/llm/chat-model.ts`), separate from
+  `lib/providers/llm`'s one-shot `complete()` used everywhere else. It
+  still goes through the same quota ledger (`checkHeadroom`/`consume` on
+  `('google', 'chat')`) so a chat binge can't blow the day's Gemini
+  allowance out from under the analysis pipeline.
+- **One tier, no silent fallback.** The legacy build had a local-Ollama
+  tier to fall back to; this deployment has none. `checkHeadroom` failing
+  returns a 429 with the exact reset time in the body, not a degraded
+  response — the spec's "never guess when you don't know" principle
+  applied to availability, not just content.
+- **Read-only tool surface, a deliberate narrowing from the legacy
+  build.** `lib/chat/tools.ts` exposes 7 tools — `getAccountStats`,
+  `getPosts`, `getCompetitorStats`, `getCurrentGap`, `getMyWinners`,
+  `getDrafts`, `listAccounts` — all pure reads over data this build
+  already computed, so no tool call spends a single unit of model quota.
+  The legacy version also had tools that created/edited/scheduled drafts
+  and triggered rescans; the spec's chat section only asks for
+  "grounded... advisory" coaching, and "no extra features beyond what's
+  listed" was read as ruling those out here. Nothing stops a future stage
+  from adding them back deliberately.
+- **The system prompt is grounded in real state, never placeholders** —
+  `lib/chat/threads.ts`'s `buildSystemPrompt()` pulls the self account,
+  the latest analysis's gap claim (or an explicit "no analysis yet"
+  sentence), the voice profile, and today's date fresh on every turn.
+  Tested by asserting the literal handle/follower count/niche/gap-claim
+  text appears in the rendered prompt, not by asserting a length or a
+  vibe (`tests/chat.test.ts`).
+- **Never trust model arithmetic, chat edition.** The gap `claim` string
+  surfaced to the model was already validated against its own numbers
+  back in Stage 4 (`claimMentionsBothStats`) before it was ever persisted
+  — the chat layer inherits that guarantee for free by only ever quoting
+  the stored claim, never re-deriving percentages itself.
+- **UI**: `app/chat/page.tsx` (server component — lists threads, resolves
+  the active one from `?thread=`, loads its history) plus
+  `components/chat-panel.tsx` (client — thread sidebar with create/delete,
+  and the streaming conversation via `@ai-sdk/react`'s `useChat` against
+  `DefaultChatTransport({ api: '/api/chat', body: { threadId } })`).
+  Matches the existing instrument-panel design system (`Panel`,
+  `PanelHeader`, `Badge`, dark surfaces, amber signal accent) rather than
+  introducing a new visual language for one page. Thread create/delete go
+  through two small new routes, `app/api/chat/threads/route.ts` (GET
+  list, POST create) and `app/api/chat/threads/[id]/route.ts` (DELETE) —
+  the only state-changing surface added this stage beyond the chat route
+  itself.
+- **Smoke-tested against a real dev server and a real Postgres database**
+  (no browser-automation tooling is installed in this project — it's a
+  server-rendered dashboard with no existing UI test infra, so this was a
+  manual `curl` pass, not a new dependency added just for one check):
+  `GET /chat` renders the panel chrome (`Threads`, `Coach`, the message
+  input) server-side; `POST /api/chat/threads` creates a real row and
+  `GET` lists it back; `POST /api/chat` returns a `text/event-stream`
+  response using the AI SDK's UI-message-stream protocol
+  (`x-vercel-ai-ui-message-stream: v1`) and, with no real
+  `GOOGLE_GENERATIVE_AI_API_KEY` configured in this environment, surfaces
+  a clean `{"type":"error"}` frame rather than crashing — exactly the
+  shape `components/chat-panel.tsx`'s `error` state is built to render.
+  This confirms the quota gate, the streaming wire format, and the error
+  path all work end-to-end; it does not confirm output quality from a
+  real Gemini response, which needs a real key.
+- **Also tested programmatically** (`tests/chat.test.ts`, 11 tests): thread
+  CRUD, system-prompt grounding, all 7 coach tools called directly and
+  asserted against real inserted rows (including the `getCompetitorStats`
+  bug below), and two route-level tests using `MockLanguageModelV4` from
+  `ai/test` — one full happy-path stream that asserts both turns end up
+  persisted and the thread gets auto-titled from the first message, one
+  quota-exhausted 429.
+- **A real bug, caught by testing against real inserted rows rather than
+  mocks**: `getCompetitorStats` only ever queried
+  `competitorAccountIds[0]` — the first competitor account — for a pool
+  that's supposed to cover all of them. A test inserting two competitors
+  and asserting the tool's `byFormat` reflects both accounts' posts would
+  have silently passed against a mock returning canned data; against a
+  real multi-account fixture it failed immediately. Fixed with
+  `inArray(posts.accountId, competitorAccountIds)`.
+
+---
+
 ## Deviations from the spec
 
 - **The 5 pattern dimensions and the fixed 10-category hook taxonomy are
@@ -438,3 +521,7 @@ this stage is considered done." It does — see below.
 - **Gemini.** No live call yet — `GoogleLlm` is written and typechecked
   (`lib/providers/llm/google.ts`) but every test in Stage 3 runs against
   `FakeLlm`; no `GOOGLE_GENERATIVE_AI_API_KEY` exists for this build yet.
+  The same is true of `getChatModel()` (Stage 7) — the streaming chat
+  route was smoke-tested end-to-end with no key configured, confirming
+  the quota gate and error path, but no real Gemini response has been
+  streamed through it yet.

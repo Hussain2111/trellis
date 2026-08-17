@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { desc } from 'drizzle-orm';
 import { biggestGap, computePatterns, type Gap, type Pattern } from './patterns';
 import { loadCorpus } from './corpus';
 import { reconcilePatterns } from './reconcile';
@@ -9,7 +10,7 @@ import {
   GAP_ANALYSIS_SYSTEM,
 } from '../prompts/gap-analysis.v1';
 import { db } from '../db/client';
-import { analyses } from '../db/schema';
+import { analyses, type Analysis } from '../db/schema';
 
 /** Never trusts model prose with the actual numbers — the receipts never depend on the model doing arithmetic correctly. */
 function deterministicClaim(pattern: Pattern): string {
@@ -119,4 +120,9 @@ export async function runGapAnalysis(windowDays: number): Promise<AnalysisResult
     .returning({ id: analyses.id });
 
   return { id: row!.id, patterns: patternsWithClaims, gap, generatedBy };
+}
+
+export async function latestAnalysis(): Promise<Analysis | null> {
+  const [row] = await db().select().from(analyses).orderBy(desc(analyses.id)).limit(1);
+  return row ?? null;
 }

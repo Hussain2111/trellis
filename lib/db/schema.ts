@@ -389,3 +389,5 @@ export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type Run = typeof runs.$inferSelect;
 export type QuotaBudget = typeof quotaBudget.$inferSelect;
+export type Analysis = typeof analyses.$inferSelect;
+export type Draft = typeof drafts.$inferSelect;
