@@ -391,3 +391,5 @@ export type Run = typeof runs.$inferSelect;
 export type QuotaBudget = typeof quotaBudget.$inferSelect;
 export type Analysis = typeof analyses.$inferSelect;
 export type Draft = typeof drafts.$inferSelect;
+export type DraftAsset = typeof draftAssets.$inferSelect;
+export type Schedule = typeof schedule.$inferSelect;

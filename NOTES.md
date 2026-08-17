@@ -537,6 +537,78 @@ this stage is considered done." It does — see below.
 
 ---
 
+## UI pages — posts, competitors, gap, voice, drafts, calendar, settings
+
+Stages 3–6 and 8 shipped their backend and job-queue machinery without a
+matching page — `Nav` (Stage 1) already listed every route, but only the
+dashboard and chat existed. This closes that gap: all seven remaining
+routes now read from the tables and lib functions those stages already
+built, with no new business logic — every page is a thin display over an
+existing query or analysis function (`summariseByFormat`, `poolComposition`,
+`latestAnalysis`, `activeVoice`, `scheduledRows`, `monthlyCostSummary`,
+`recentRuns`), the same "chat tools are read-only, no new computation"
+discipline Stage 7 established, just applied to server components instead
+of AI SDK tools.
+
+- **`/posts`** — the self account's posts joined with `post_features` and
+  `hook_labels`, format summary at the top via `summariseByFormat`. Outlier
+  ("winner"), CTA, and question badges surface the exact booleans the
+  pattern engine itself reads, so what the UI shows and what the analysis
+  actually used to compute a claim are provably the same data.
+- **`/competitors`** — the competitor pool plus `poolComposition()`'s
+  `PoolWarning` (the "only 2 competitors scanned, treat this as noisy"
+  message from Stage 4), each account tagged with the hashtag it was
+  discovered through.
+- **`/gap`** — the headline gap's claim text plus all 5 ranked patterns, each
+  with niche% vs. your% (via the `Share` component — a percentage is never
+  shown without its sample size) and a `Receipts` component listing the
+  actual backing post ids (capped at 8 with a "+N more" tail) — the spec's
+  "receipts" requirement made literally clickable-numbers-visible, not just
+  computed-and-trusted.
+- **`/voice`** — the active profile's markdown plus every structured field
+  (tone, vocabulary, banned words, etc.), version-badged since `saveVoice`
+  never overwrites a prior version.
+- **`/drafts`** — every draft with format-specific body rendering (carousel
+  slide list, reel beats + on-screen text, image concept/direction),
+  rendered slide thumbnails pulled straight from `draftAssets.publicUrl`,
+  and a `ScheduleDraftForm` client component wired to `POST /api/schedule`
+  for any draft still in `draft`/`approved` status.
+- **`/calendar`** — `scheduledRows()` with unschedule and mark-posted
+  actions (`DELETE`/`PATCH /api/schedule/[id]`, the Stage 8 API), and a
+  `CalendarTickPoller` client component that pokes the job queue every 20s
+  while the page is open.
+- **`/settings`** — the $0.00 cost check (`monthlyCostSummary`, badged red
+  if `paidCallCount` is ever nonzero — the one thing this page exists to
+  catch), every guard flag and provider (`ALLOW_PAID_PROVIDERS`,
+  `ENABLE_IG_PUBLISHING`, `SCRAPE_MODE`, model/actor names), the most recent
+  `token_check` run's status, and a table of recent provider calls. No
+  secret values (API keys, tokens) are ever rendered — only booleans and
+  provider identifiers.
+- **A load-bearing correction to Stage 8's own NOTES entry, caught while
+  building this.** Stage 8 said the calendar page would poke
+  `/api/jobs/tick`, but that route is gated by `isAuthorizedCronRequest` —
+  fine for Vercel's own cron caller, but a real problem for a browser tab,
+  since a production `CRON_SECRET` would make every client-side poke 401.
+  `/api/calendar/tick` is a new, deliberately unauthenticated route instead
+  (same trust level as `/api/scan`, consistent with the spec's "no
+  authentication of any kind"), doing nothing `/api/cron/publish` doesn't
+  already also do on its own daily schedule.
+- **Real, end-to-end smoke test, not just empty-state screenshots.** Ran a
+  full scan against the dev server with `SCRAPE_MODE=fake` and
+  `LLM_PROVIDER=fake` (fixture mode only has a profile fixture for
+  `testaccount`, not for synthetic discovered competitors — fake mode
+  generates competitor data too, which fixture mode doesn't), ticked the
+  job queue until it settled, and confirmed every page renders real rows:
+  `/gap` showing an actual computed claim and 5 patterns, `/voice` showing
+  real extracted fields, `/drafts` showing 3 real carousel drafts with 15
+  rendered slide thumbnails, `/competitors` showing discovered accounts,
+  scheduled a real draft and watched it appear on `/calendar` with working
+  unschedule/mark-posted buttons, and confirmed `/settings` reads $0.00
+  with zero paid calls. All smoke-test rows were wiped afterward; the
+  automated suite doesn't depend on any of them.
+
+---
+
 ## Deviations from the spec
 
 - **The 5 pattern dimensions and the fixed 10-category hook taxonomy are
