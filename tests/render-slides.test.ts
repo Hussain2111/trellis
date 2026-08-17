@@ -93,6 +93,38 @@ describe('render_slides (IMAGE_PROVIDER=none, local storage fallback)', () => {
     expect(assets).toHaveLength(4);
   }, 30_000);
 
+  it('renders a hook(+cta) hero card for a single image draft, not just carousels', async () => {
+    await upsertAccount({ handle: 'sliderself3', role: 'self' });
+    const [analysis] = await db()
+      .insert(analyses)
+      .values({ windowDays: 30, patterns: [], gap: {}, inputsHash: 'z', generatedBy: 'test' })
+      .returning({ id: analyses.id });
+    const [draft] = await db()
+      .insert(drafts)
+      .values({
+        analysisId: analysis!.id,
+        format: 'image',
+        title: 'A single image post',
+        hook: 'The hook line',
+        body: { kind: 'image', concept: 'A concept.', image_direction: 'Warm tones.' },
+        caption: 'A caption.',
+        hashtags: [],
+        cta: 'Follow for more',
+        evidence: [],
+        generatedBy: 'test',
+      })
+      .returning({ id: drafts.id });
+
+    const jobId = await enqueue('render_slides', { draftId: draft!.id });
+    await runTick(['render_slides'], 15_000);
+
+    const job = await getJob(jobId!);
+    expect(job?.status).toBe('done');
+    const assets = await db().select().from(draftAssets).where(eq(draftAssets.draftId, draft!.id));
+    expect(assets).toHaveLength(2); // hook + cta, no carousel body slides
+    expect(assets.map((a) => a.slideIndex).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([1, 2]);
+  }, 20_000);
+
   it('no-ops cleanly for a non-carousel draft', async () => {
     await upsertAccount({ handle: 'sliderself2', role: 'self' });
     const [analysis] = await db()

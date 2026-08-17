@@ -4,6 +4,8 @@ import { classifyHooks } from './classify-hooks';
 import { computeFeatures } from './compute-features';
 import { discoverCompetitors } from './discover-competitors';
 import { generateDrafts } from './generate-drafts';
+import { publishDue } from './publish-due';
+import { refreshIgToken } from './refresh-ig-token';
 import { renderSlides } from './render-slides';
 import { runAnalysis } from './run-analysis';
 import { scanAccount } from './scan';
@@ -28,4 +30,6 @@ export function registerJobHandlers(): void {
   registerHandler('build_voice_profile', buildVoiceProfile);
   registerHandler('generate_drafts', generateDrafts);
   registerHandler('render_slides', renderSlides);
+  registerHandler('publish_due', publishDue);
+  registerHandler('refresh_ig_token', refreshIgToken);
 }

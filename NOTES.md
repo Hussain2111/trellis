@@ -465,6 +465,78 @@ this stage is considered done." It does — see below.
 
 ---
 
+## Stage 8 — scheduling + publishing, verified
+
+- **No cloudflared tunnel — the one piece of the legacy publish design that
+  simply doesn't apply anymore.** The local-first build needed a quick
+  tunnel because Meta's Graph API cannot fetch media from `localhost`; this
+  app is already deployed at a public HTTPS URL, so `draftAssets.publicUrl`
+  (Supabase Storage, or the `/api/assets/...` dev fallback) is directly
+  postable. `lib/publish/graph.ts` is otherwise a near-verbatim port of the
+  legacy Graph API client — container create → poll → publish, carousel
+  children-then-parent — since that part of the design never depended on
+  SQLite or a local worker.
+- **`ENABLE_IG_PUBLISHING=false` (the default) is the spec's "manual/watched
+  first publish" framing enforced in code, not just a suggestion.**
+  `publish_due` treats a disabled flag as a clean no-op, not an error: due
+  rows stay `pending` and wait. Turning the flag on is a deliberate,
+  separate act from scheduling a post — scheduling never implicitly enables
+  live publishing.
+- **A real gap in Stage 6, closed here.** `slidesForDraft` already produced
+  a valid hook(+CTA) slide for a non-carousel draft — the carousel-body loop
+  is just skipped when `body.kind !== 'carousel'` — but `render_slides`
+  unconditionally skipped every non-carousel format, so `image` drafts (the
+  most common single-post format) could never have anything to publish.
+  Fixed by only skipping `reel`, which genuinely has nothing to render (no
+  video pipeline exists in this stack). A single `image` draft now renders
+  as a 1–2 slide "carousel" (hook, optionally CTA) and publishes as one
+  container using the hook card. `reel` drafts fail _permanently_ at
+  publish time with a clear "no rendered assets" error rather than silently
+  doing nothing — consistent with "never guess when you don't know."
+- **The claim-then-publish step for `schedule` rows reuses the exact
+  `FOR UPDATE SKIP LOCKED` pattern `lib/jobs/queue.ts`'s `claimNext` already
+  established** (`lib/publish/schedule.ts`'s `claimDueForPublish`), so a
+  cron sweep and a dashboard-triggered tick landing at the same moment can't
+  double-publish the same row. Also reused: aliasing the `RETURNING` clause
+  to camelCase (`draft_id AS "draftId"`) instead of hand-writing a
+  `hydrate()` mapper — the fix for the exact snake_case bug Stage 2 hit,
+  applied proactively here since the shape needed was small enough not to
+  warrant its own mapper function.
+- **Cron frequency is Vercel Hobby's real, load-bearing constraint here,
+  not just a documented unknown.** Hobby cron jobs run once a day at most,
+  so `/api/cron/publish` alone gives same-day (not same-minute) publish
+  latency. The calendar UI (Stage 21) mitigates this the same way the scan
+  flow already does — it pokes `/api/jobs/tick` while open — but a
+  scheduled post published while nobody has the app open can lag up to a
+  day behind its scheduled time. This is an accepted, documented trade-off
+  of staying at $0, not a bug.
+- **Test seam, same shape as `chat-model.ts`'s `__setChatModelForTests`.**
+  `lib/publish/graph.ts` exports `__setGraphFetchForTests` to swap in a fake
+  `fetch` — there's no existing DI pattern in this codebase for a raw-fetch
+  provider (Apify goes through the `apify-client` SDK instead), so this
+  establishes one, consistent with the existing override-seam convention
+  rather than introducing a new mocking library.
+- **Tested against real Postgres and a fake Graph API** (`tests/publish.test.ts`,
+  24 tests): `lib/publish/graph.ts`'s container lifecycle, error
+  classification (400 permanent vs. 429 not), `publishingLimit` degrading to
+  `null` rather than throwing, `inspectToken` on valid/invalid/network-error
+  tokens; `lib/publish/schedule.ts`'s full CRUD plus a concurrency
+  assertion that a second `claimDueForPublish` finds nothing once a row is
+  claimed; the `publish_due` handler's disabled/no-token/single-image/
+  carousel/no-assets paths, including verifying a carousel with 3 slides
+  makes exactly 4 `/media` calls (3 children + 1 parent); `refresh_ig_token`
+  on valid, invalid, and disabled paths, asserting the actual `runs` row
+  each leaves behind.
+- **Smoke-tested against a real dev server and real Postgres, no live
+  Instagram credentials**: scheduled a real draft via `POST /api/schedule`,
+  confirmed it appeared via `GET`, marked it posted via `PATCH .../[id]`
+  (the manual-mode path), unscheduled a second one via `DELETE`, and hit
+  `GET /api/cron/publish` directly — confirmed both `publish_due` and
+  `refresh_ig_token` ran and no-opped cleanly with `ENABLE_IG_PUBLISHING`
+  unset, leaving the exact job labels asserted in the handler tests.
+
+---
+
 ## Deviations from the spec
 
 - **The 5 pattern dimensions and the fixed 10-category hook taxonomy are
@@ -525,3 +597,17 @@ this stage is considered done." It does — see below.
   route was smoke-tested end-to-end with no key configured, confirming
   the quota gate and error path, but no real Gemini response has been
   streamed through it yet.
+- **The Instagram Graph API.** `lib/publish/graph.ts` and the `publish_due`
+  / `refresh_ig_token` handlers are tested against a fake `fetch`
+  (`tests/publish.test.ts`) that mirrors Meta's documented request/response
+  shapes, and smoke-tested end-to-end with `ENABLE_IG_PUBLISHING` unset —
+  neither exercises an actual container create, poll, or publish against a
+  real Instagram Business account, since no `IG_USER_ID`/`IG_ACCESS_TOKEN`
+  exists for this build yet. `docs/instagram-setup.md` documents the setup
+  needed to change that. Whether `content_publishing_limit`'s response
+  shape matches what `publishingLimit()` expects is likewise unverified
+  against a real account.
+- **Vercel's actual Hobby cron cadence and job-count limits.** `vercel.json`
+  now declares two daily cron entries (`keepalive`, `publish`); both are
+  per Vercel's documented Hobby-tier behavior (daily minimum interval), not
+  yet deployed and observed running on a schedule.

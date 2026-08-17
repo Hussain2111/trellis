@@ -8,10 +8,14 @@ import { uploadAsset } from '../../storage';
 import { JobPermanentError, type JobContext } from '../types';
 
 /**
- * Carousel drafts only — reels and single images have nothing to render into
- * a slide sequence. Slide *text* is always rendered in code (satori + resvg);
- * only the background may come from a free image model, and a failure there
- * degrades to a palette gradient rather than blocking the render.
+ * Carousels render their full slide sequence; `slidesForDraft` also produces
+ * a valid hook(+CTA) card for a single `image` draft, so those render too —
+ * a one-or-two-slide "carousel" is exactly what a single Instagram image
+ * post's hero card looks like. Only `reel` has nothing to render here: it
+ * needs video, which is out of scope for a free-tier image pipeline. Slide
+ * *text* is always rendered in code (satori + resvg); only the background
+ * may come from a free image model, and a failure there degrades to a
+ * palette gradient rather than blocking the render.
  */
 export async function renderSlides(ctx: JobContext<'render_slides'>): Promise<void> {
   const [draft] = await db()
@@ -21,7 +25,7 @@ export async function renderSlides(ctx: JobContext<'render_slides'>): Promise<vo
     .limit(1);
   if (!draft) throw new JobPermanentError(`draft ${ctx.payload.draftId} no longer exists`);
 
-  if (draft.format !== 'carousel') {
+  if (draft.format === 'reel') {
     await ctx.save({ progress: 1, label: `${draft.format} draft has no slides to render` });
     return;
   }
