@@ -27,7 +27,7 @@ export const envSchema = z.object({
   // --- Model provider (Gemini free tier — the only LLM tier) ---------------
   LLM_PROVIDER: z.enum(['google', 'fake']).default('google'),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),
-  GOOGLE_MODEL: z.string().default('gemini-2.5-flash'),
+  GOOGLE_MODEL: z.string().default('gemini-3.6-flash'),
   GOOGLE_MODEL_LITE: z.string().default('gemini-2.5-flash-lite'),
 
   // --- Images ---------------------------------------------------------------
