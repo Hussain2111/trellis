@@ -4,6 +4,7 @@ import { jobs, posts } from '@/lib/db/schema';
 import { selfAccount } from '@/lib/ingest/upsert';
 import { Badge, Empty, Panel, PanelHeader, Stat } from '@/components/ui/primitives';
 import { ScanForm } from '@/components/scan-form';
+import { PipelineTickPoller } from '@/components/pipeline-tick-poller';
 import { formatNumber } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,7 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
+      <PipelineTickPoller />
       <header className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-[20px] leading-tight font-semibold">
@@ -37,7 +39,6 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
         </div>
         <div className="flex items-center gap-3">
           <ScanForm />
-          <Badge tone="signal">stage 2 / 8</Badge>
         </div>
       </header>
 

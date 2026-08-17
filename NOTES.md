@@ -674,6 +674,34 @@ real external system rather than this codebase's own logic:
   `env()` turned out to be the actual reliable way to confirm a Vercel env
   var change had taken effect — more reliable than the Vercel dashboard
   itself, which is worth keeping in mind for any future config debugging.
+- **Vercel Deployment Protection blocked Apify's webhook outright.** Once
+  the actor input was fixed, the real scrape succeeded but the completion
+  webhook still failed with `401 Protected deployment` —
+  `vercel_auth_enabled: true` was gating every deployment behind Vercel's
+  own SSO login, which an external service like Apify obviously can't
+  satisfy. This is a project-level Vercel setting (Settings → Deployment
+  Protection → Vercel Authentication), not application code. Turning it
+  off (or scoping it to Preview only) is required for the webhook, and
+  matches the app's own "no auth of any kind" design anyway.
+- **A real architectural gap, found and fixed once a live scan actually
+  worked**: the chain a scan enqueues after itself — `compute_features` →
+  `classify_hooks` → `run_analysis` → `build_voice_profile` →
+  `generate_drafts` → `render_slides` — had no automatic trigger in
+  production. `/api/scan` only synchronously ticks the `scan_account` type
+  it just enqueued; the Apify webhook receiver only resumes and completes
+  that one waiting job. Every job type after that sat `pending` forever,
+  since Vercel Hobby cron runs once a day and nothing else was polling the
+  general queue — this class of bug was invisible in local/CI testing
+  because manual `runTick()` calls (direct in tests, or hand-run ticks
+  during dev) always advanced the whole chain artificially. Fixed the same
+  way Stage 8/21 already solved this exact problem for the calendar page:
+  a new unauthenticated `/api/pipeline/tick` (mirrors `/api/calendar/tick`)
+  plus a `PipelineTickPoller` client component that pokes it every 10s
+  while the dashboard is open, so the full pipeline actually finishes in
+  the time a user is willing to watch it, not "sometime in the next 24
+  hours." Also dropped the `stage 2 / 8` badge that had been hardcoded on
+  the dashboard since Stage 1 verification — stale now that all 8 stages
+  are built and deployed.
 
 ## Not yet exercised against reality
 
