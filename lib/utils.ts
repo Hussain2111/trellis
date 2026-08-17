@@ -1,0 +1,26 @@
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export function cn(...inputs: ClassValue[]): string {
+  return twMerge(clsx(inputs));
+}
+
+export function formatNumber(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+export function formatUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+export function formatRelative(epochSeconds: number | null | undefined): string {
+  if (!epochSeconds) return 'never';
+  const delta = Math.floor(Date.now() / 1000) - epochSeconds;
+  if (delta < 60) return `${delta}s ago`;
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+  return `${Math.floor(delta / 86400)}d ago`;
+}
