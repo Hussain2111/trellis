@@ -47,7 +47,9 @@
     font-size: 14px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
-    font-feature-settings: 'cv05' 1, 'ss03' 1;
+    font-feature-settings:
+      'cv05' 1,
+      'ss03' 1;
   }
 
   /* Numbers never reflow when they tick. */

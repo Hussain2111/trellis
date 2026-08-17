@@ -1,0 +1,93 @@
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+@import 'tailwindcss';
+
+/**
+ * Design direction: "instrument panel".
+ *
+ * Dark only — this is a personal cockpit, not a site. Near-black canvas, hairline
+ * borders instead of shadows, and one rule that carries the identity: every
+ * number, handle, delta and metric label is set in mono. The coach is numerate,
+ * so the typography says so. Amber is reserved for the thing that matters right
+ * now (the gap, the headline delta); everything else is grey.
+ */
+
+@theme {
+  --color-canvas: #0a0b0d;
+  --color-surface: #101216;
+  --color-surface-2: #15181d;
+  --color-line: #1f232a;
+  --color-line-strong: #2b3038;
+
+  --color-ink: #e9e7e4;
+  --color-ink-muted: #8b9098;
+  --color-ink-faint: #5c626b;
+
+  --color-signal: #ffb020;
+  --color-signal-dim: #7a5410;
+  --color-positive: #3fb68b;
+  --color-negative: #e5624f;
+  --color-info: #5b8def;
+
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, monospace;
+
+  --radius-panel: 4px;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'cv05' 1, 'ss03' 1;
+  }
+
+  /* Numbers never reflow when they tick. */
+  .tabular,
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--color-signal-dim);
+    color: var(--color-ink);
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 3px solid var(--color-canvas);
+    border-radius: 999px;
+  }
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+@utility metric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}

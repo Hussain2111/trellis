@@ -1,38 +1,42 @@
 import { sql } from 'drizzle-orm';
 import {
-  blob,
+  boolean,
+  doublePrecision,
   index,
   integer,
+  jsonb,
+  pgTable,
   real,
-  sqliteTable,
+  serial,
   text,
+  timestamp,
   uniqueIndex,
-} from 'drizzle-orm/sqlite-core';
+} from 'drizzle-orm/pg-core';
 
 /**
  * Single-user, single-account schema. There are deliberately no `user_id`
- * columns, no tenancy, and no soft-delete bookkeeping — see §2 of the spec.
+ * columns, no tenancy, and no soft-delete bookkeeping — this app is a
+ * personal dashboard for one Instagram account, not a SaaS product.
  *
- * Timestamps are stored as unix epoch seconds (integer) so SQLite can compare
- * and index them without date parsing.
+ * Runs on Supabase Postgres. Timestamps are `timestamptz`; ids are serial.
  */
 
-const now = sql`(unixepoch())`;
+const now = sql`now()`;
 
 // --- settings ---------------------------------------------------------------
 
-export const settings = sqliteTable('settings', {
+export const settings = pgTable('settings', {
   key: text('key').primaryKey(),
-  value: text('value').notNull(), // JSON-encoded
-  updatedAt: integer('updated_at').notNull().default(now),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
 });
 
-// --- accounts ---------------------------------------------------------------
+// --- accounts (self + discovered competitors) --------------------------------
 
-export const accounts = sqliteTable(
+export const accounts = pgTable(
   'accounts',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     handle: text('handle').notNull(),
     role: text('role', { enum: ['self', 'competitor'] }).notNull(),
     igUserId: text('ig_user_id'),
@@ -41,21 +45,24 @@ export const accounts = sqliteTable(
     followers: integer('followers'),
     following: integer('following'),
     postsCount: integer('posts_count'),
-    isVerified: integer('is_verified', { mode: 'boolean' }).notNull().default(false),
-    notes: text('notes'),
-    active: integer('active', { mode: 'boolean' }).notNull().default(true),
-    lastScrapedAt: integer('last_scraped_at'),
-    createdAt: integer('created_at').notNull().default(now),
+    isVerified: boolean('is_verified').notNull().default(false),
+    /** Inferred niche label — set on the self account by the single niche-inference call. */
+    niche: text('niche'),
+    /** Which of the self account's hashtags this competitor was discovered through. */
+    discoveredViaHashtag: text('discovered_via_hashtag'),
+    active: boolean('active').notNull().default(true),
+    lastScrapedAt: timestamp('last_scraped_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [uniqueIndex('accounts_handle_uq').on(t.handle), index('accounts_role_idx').on(t.role)],
 );
 
-// --- posts ------------------------------------------------------------------
+// --- posts (own + competitors) ------------------------------------------------
 
-export const posts = sqliteTable(
+export const posts = pgTable(
   'posts',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     accountId: integer('account_id')
       .notNull()
       .references(() => accounts.id, { onDelete: 'cascade' }),
@@ -64,7 +71,7 @@ export const posts = sqliteTable(
       .notNull()
       .default('unknown'),
     caption: text('caption'),
-    takenAt: integer('taken_at'),
+    takenAt: timestamp('taken_at', { withTimezone: true }),
     likes: integer('likes'),
     comments: integer('comments'),
     views: integer('views'),
@@ -72,15 +79,15 @@ export const posts = sqliteTable(
     durationS: real('duration_s'),
     carouselCount: integer('carousel_count'),
     thumbnailUrl: text('thumbnail_url'),
-    mediaUrls: text('media_urls', { mode: 'json' }).$type<string[]>(),
-    isSponsored: integer('is_sponsored', { mode: 'boolean' }).notNull().default(false),
+    mediaUrls: jsonb('media_urls').$type<string[]>(),
+    isSponsored: boolean('is_sponsored').notNull().default(false),
     /**
-     * The untouched actor payload. Mandatory: actor schemas drift, and keeping
-     * the raw response means re-normalisation never costs another scrape.
+     * The untouched Apify actor payload. Mandatory: actor schemas drift, and
+     * keeping the raw response means re-normalisation never costs another scrape.
      */
-    raw: text('raw', { mode: 'json' }).notNull(),
-    firstSeenAt: integer('first_seen_at').notNull().default(now),
-    lastSeenAt: integer('last_seen_at').notNull().default(now),
+    raw: jsonb('raw').notNull(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().default(now),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [
     uniqueIndex('posts_shortcode_uq').on(t.shortcode),
@@ -89,9 +96,9 @@ export const posts = sqliteTable(
   ],
 );
 
-// --- post_features ----------------------------------------------------------
+// --- post_features (deterministic, Layer A) -----------------------------------
 
-export const postFeatures = sqliteTable(
+export const postFeatures = pgTable(
   'post_features',
   {
     postId: integer('post_id')
@@ -100,283 +107,273 @@ export const postFeatures = sqliteTable(
     captionLength: integer('caption_length').notNull().default(0),
     firstLine: text('first_line'),
     hookText: text('hook_text'),
-    spokenHook: text('spoken_hook'),
     hashtagCount: integer('hashtag_count').notNull().default(0),
     mentionCount: integer('mention_count').notNull().default(0),
     emojiCount: integer('emoji_count').notNull().default(0),
-    hasQuestion: integer('has_question', { mode: 'boolean' }).notNull().default(false),
-    hasCta: integer('has_cta', { mode: 'boolean' }).notNull().default(false),
+    hasQuestion: boolean('has_question').notNull().default(false),
+    hasCta: boolean('has_cta').notNull().default(false),
     postedHour: integer('posted_hour'),
     postedDow: integer('posted_dow'),
-    engagementRate: real('engagement_rate'),
-    likesZ: real('likes_z'),
-    viewsZ: real('views_z'),
-    isOutlier: integer('is_outlier', { mode: 'boolean' }).notNull().default(false),
-    computedAt: integer('computed_at').notNull().default(now),
+    engagementRate: doublePrecision('engagement_rate'),
+    likesZ: doublePrecision('likes_z'),
+    viewsZ: doublePrecision('views_z'),
+    isOutlier: boolean('is_outlier').notNull().default(false),
+    computedAt: timestamp('computed_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('post_features_outlier_idx').on(t.isOutlier)],
 );
 
-// --- post_embeddings --------------------------------------------------------
+// --- hook_labels (per-post Gemini classification — replaces embed+cluster) ---
 
-export const postEmbeddings = sqliteTable(
-  'post_embeddings',
+/**
+ * Growy-style hook labeling: one Gemini call per post classifies its opening
+ * line into a named category (e.g. "question hook", "bold claim", "listicle
+ * open"). This is what makes "51% of top reels use X hook, you use it 20%"
+ * possible. Deliberately flat — no embedding/clustering step, since v1 tracks
+ * Growy's presumed per-post-classification approach rather than improving on it.
+ */
+export const hookLabels = pgTable(
+  'hook_labels',
   {
     postId: integer('post_id')
       .primaryKey()
       .references(() => posts.id, { onDelete: 'cascade' }),
-    // Float32Array serialised as a blob. 1,100 x 768 floats is a few MB —
-    // no vector database required.
-    vector: blob('vector').notNull(),
-    dim: integer('dim').notNull(),
-    model: text('model').notNull(),
-    sourceText: text('source_text'),
-    createdAt: integer('created_at').notNull().default(now),
+    category: text('category').notNull(),
+    confidence: real('confidence'),
+    generatedBy: text('generated_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
-  (t) => [index('post_embeddings_model_idx').on(t.model)],
+  (t) => [index('hook_labels_category_idx').on(t.category)],
 );
 
-// --- archetypes -------------------------------------------------------------
+// --- analyses (5 patterns + 1 gap, each tagged with source post ids) ---------
 
-export const archetypes = sqliteTable(
-  'archetypes',
-  {
-    id: integer('id').primaryKey({ autoIncrement: true }),
-    clusterId: integer('cluster_id').notNull(),
-    runId: text('run_id').notNull(),
-    name: text('name').notNull(),
-    description: text('description'),
-    centroid: blob('centroid').notNull(),
-    dim: integer('dim').notNull(),
-    size: integer('size').notNull().default(0),
-    userRenamed: integer('user_renamed', { mode: 'boolean' }).notNull().default(false),
-    active: integer('active', { mode: 'boolean' }).notNull().default(true),
-    generatedBy: text('generated_by'),
-    createdAt: integer('created_at').notNull().default(now),
-  },
-  (t) => [
-    uniqueIndex('archetypes_run_cluster_uq').on(t.runId, t.clusterId),
-    index('archetypes_active_idx').on(t.active),
-  ],
-);
-
-// --- post_labels ------------------------------------------------------------
-
-export const postLabels = sqliteTable(
-  'post_labels',
-  {
-    postId: integer('post_id')
-      .primaryKey()
-      .references(() => posts.id, { onDelete: 'cascade' }),
-    archetypeId: integer('archetype_id')
-      .notNull()
-      .references(() => archetypes.id, { onDelete: 'cascade' }),
-    distance: real('distance').notNull(),
-    assignedAt: integer('assigned_at').notNull().default(now),
-  },
-  (t) => [index('post_labels_archetype_idx').on(t.archetypeId)],
-);
-
-// --- analyses ---------------------------------------------------------------
-
-export const analyses = sqliteTable(
+export const analyses = pgTable(
   'analyses',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
-    createdAt: integer('created_at').notNull().default(now),
+    id: serial('id').primaryKey(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
     windowDays: integer('window_days').notNull(),
-    patterns: text('patterns', { mode: 'json' }).notNull(),
-    gap: text('gap', { mode: 'json' }).notNull(),
+    /** Pattern[] — each { name, description, nicheStat, myStat, delta, postIds[] }. */
+    patterns: jsonb('patterns').notNull(),
+    /** { claim, nicheStat, myStat, delta, postIds[] } — the single biggest gap. */
+    gap: jsonb('gap').notNull(),
     inputsHash: text('inputs_hash').notNull(),
     generatedBy: text('generated_by').notNull(),
   },
   (t) => [index('analyses_hash_idx').on(t.inputsHash)],
 );
 
-// --- voice_profile ----------------------------------------------------------
+// --- resurfaced_posts (back-catalogue mining, deterministic) -----------------
 
-export const voiceProfile = sqliteTable(
+/**
+ * "Your DM-funnel reel hit 552K, you haven't made one like it in 30 days" —
+ * past high performers whose hook category / archetype hasn't been repeated
+ * recently. Each row's `postId` is its own receipt.
+ */
+export const resurfacedPosts = pgTable(
+  'resurfaced_posts',
+  {
+    id: serial('id').primaryKey(),
+    postId: integer('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    metric: text('metric').notNull(),
+    peakValue: doublePrecision('peak_value').notNull(),
+    daysSinceRepeated: integer('days_since_repeated').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [index('resurfaced_posts_post_idx').on(t.postId)],
+);
+
+// --- voice_profile -------------------------------------------------------------
+
+export const voiceProfile = pgTable(
   'voice_profile',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     version: integer('version').notNull(),
     markdown: text('markdown').notNull(),
-    fields: text('fields', { mode: 'json' }).notNull(),
-    editedByUser: integer('edited_by_user', { mode: 'boolean' }).notNull().default(false),
-    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    fields: jsonb('fields').notNull(),
+    active: boolean('active').notNull().default(true),
     generatedBy: text('generated_by').notNull(),
-    createdAt: integer('created_at').notNull().default(now),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [uniqueIndex('voice_profile_version_uq').on(t.version)],
 );
 
-// --- drafts -----------------------------------------------------------------
+// --- drafts ----------------------------------------------------------------
 
-export const drafts = sqliteTable(
+export const drafts = pgTable(
   'drafts',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     analysisId: integer('analysis_id').references(() => analyses.id, { onDelete: 'set null' }),
     format: text('format', { enum: ['carousel', 'reel', 'image'] }).notNull(),
     patternIndex: integer('pattern_index'),
     title: text('title').notNull(),
     hook: text('hook').notNull(),
-    body: text('body', { mode: 'json' }).notNull(),
+    /** Carousel body: { headline, slides: [{text}], cta }. */
+    body: jsonb('body').notNull(),
     caption: text('caption').notNull(),
-    hashtags: text('hashtags', { mode: 'json' }).$type<string[]>().notNull(),
+    hashtags: jsonb('hashtags').$type<string[]>().notNull(),
     cta: text('cta'),
     rationale: text('rationale'),
-    evidence: text('evidence', { mode: 'json' }).$type<number[]>(),
+    evidence: jsonb('evidence').$type<number[]>(),
     status: text('status', { enum: ['draft', 'approved', 'scheduled', 'published', 'discarded'] })
       .notNull()
       .default('draft'),
     generatedBy: text('generated_by').notNull(),
-    createdAt: integer('created_at').notNull().default(now),
-    updatedAt: integer('updated_at').notNull().default(now),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('drafts_status_idx').on(t.status), index('drafts_analysis_idx').on(t.analysisId)],
 );
 
-// --- draft_assets -----------------------------------------------------------
+// --- draft_assets (slide PNGs, stored in Supabase Storage) -------------------
 
-export const draftAssets = sqliteTable(
+export const draftAssets = pgTable(
   'draft_assets',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     draftId: integer('draft_id')
       .notNull()
       .references(() => drafts.id, { onDelete: 'cascade' }),
-    kind: text('kind', { enum: ['slide', 'background', 'cover', 'video'] }).notNull(),
+    kind: text('kind', { enum: ['slide', 'background', 'cover'] }).notNull(),
     slideIndex: integer('slide_index'),
-    localPath: text('local_path'),
+    /** Path inside the Supabase Storage bucket. */
+    storagePath: text('storage_path'),
     publicUrl: text('public_url'),
     prompt: text('prompt'),
     provider: text('provider'),
-    createdAt: integer('created_at').notNull().default(now),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('draft_assets_draft_idx').on(t.draftId)],
 );
 
-// --- schedule ---------------------------------------------------------------
+// --- schedule (Graph API publish queue) ---------------------------------------
 
-export const schedule = sqliteTable(
+export const schedule = pgTable(
   'schedule',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     draftId: integer('draft_id')
       .notNull()
       .references(() => drafts.id, { onDelete: 'cascade' }),
-    scheduledFor: integer('scheduled_for').notNull(),
+    scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
     status: text('status', {
       enum: ['pending', 'claimed', 'publishing', 'published', 'failed'],
     })
       .notNull()
       .default('pending'),
-    mode: text('mode', { enum: ['manual', 'api'] }).notNull().default('manual'),
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
     igMediaId: text('ig_media_id'),
-    notifiedAt: integer('notified_at'),
-    publishedAt: integer('published_at'),
-    createdAt: integer('created_at').notNull().default(now),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('schedule_due_idx').on(t.status, t.scheduledFor)],
 );
 
-// --- chat -------------------------------------------------------------------
+// --- chat --------------------------------------------------------------------
 
-export const chatThreads = sqliteTable('chat_threads', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const chatThreads = pgTable('chat_threads', {
+  id: serial('id').primaryKey(),
   title: text('title').notNull().default('New thread'),
-  createdAt: integer('created_at').notNull().default(now),
-  updatedAt: integer('updated_at').notNull().default(now),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
 });
 
-export const chatMessages = sqliteTable(
+export const chatMessages = pgTable(
   'chat_messages',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     threadId: integer('thread_id')
       .notNull()
       .references(() => chatThreads.id, { onDelete: 'cascade' }),
     role: text('role', { enum: ['system', 'user', 'assistant', 'tool'] }).notNull(),
     content: text('content').notNull(),
-    toolCalls: text('tool_calls', { mode: 'json' }),
+    toolCalls: jsonb('tool_calls'),
     generatedBy: text('generated_by'),
-    createdAt: integer('created_at').notNull().default(now),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('chat_messages_thread_idx').on(t.threadId, t.id)],
 );
 
-// --- runs -------------------------------------------------------------------
+// --- runs (every LLM/scrape call, for the $0.00 cost check) ------------------
 
-export const runs = sqliteTable(
+export const runs = pgTable(
   'runs',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     provider: text('provider').notNull(),
     model: text('model'),
     operation: text('operation').notNull(),
-    tier: text('tier', { enum: ['A', 'B', 'none'] }).notNull().default('none'),
     costEstimate: real('cost_estimate').notNull().default(0),
-    freeTier: integer('free_tier', { mode: 'boolean' }).notNull().default(true),
+    freeTier: boolean('free_tier').notNull().default(true),
     promptTokens: integer('prompt_tokens'),
     completionTokens: integer('completion_tokens'),
     durationMs: integer('duration_ms'),
     status: text('status', { enum: ['ok', 'error', 'quota', 'skipped'] }).notNull(),
     error: text('error'),
-    meta: text('meta', { mode: 'json' }),
-    createdAt: integer('created_at').notNull().default(now),
+    meta: jsonb('meta'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('runs_created_idx').on(t.createdAt), index('runs_provider_idx').on(t.provider)],
 );
 
-// --- quota_budget -----------------------------------------------------------
+// --- quota_budget (Gemini free-tier rationing, per job type) -----------------
 
-export const quotaBudget = sqliteTable(
+export const quotaBudget = pgTable(
   'quota_budget',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     provider: text('provider').notNull(),
     jobType: text('job_type').notNull(),
     dailyAllowance: integer('daily_allowance').notNull(),
     consumedToday: integer('consumed_today').notNull().default(0),
-    resetAt: integer('reset_at').notNull(),
+    resetAt: timestamp('reset_at', { withTimezone: true }).notNull(),
     /** Observed from rate-limit headers / 429s. Never hardcoded. */
     observedLimit: integer('observed_limit'),
-    observedAt: integer('observed_at'),
-    exhaustedUntil: integer('exhausted_until'),
+    observedAt: timestamp('observed_at', { withTimezone: true }),
+    exhaustedUntil: timestamp('exhausted_until', { withTimezone: true }),
   },
   (t) => [uniqueIndex('quota_provider_job_uq').on(t.provider, t.jobType)],
 );
 
-// --- jobs -------------------------------------------------------------------
+// --- jobs (resumable jobs table — the backbone of every long op on Vercel) ---
 
-export const jobs = sqliteTable(
+/**
+ * Vercel Hobby functions have a hard duration ceiling. Nothing here blocks on
+ * a multi-minute operation: a scan fires the Apify actor and returns; a
+ * webhook (or a cron poll) advances the job by one step and returns again.
+ * `checkpoint` is what makes a step resumable rather than a restart.
+ */
+export const jobs = pgTable(
   'jobs',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     type: text('type').notNull(),
-    payload: text('payload', { mode: 'json' }).notNull(),
+    payload: jsonb('payload').notNull(),
     status: text('status', {
-      enum: ['pending', 'claimed', 'running', 'done', 'failed', 'cancelled'],
+      enum: ['pending', 'claimed', 'running', 'waiting', 'done', 'failed', 'cancelled'],
     })
       .notNull()
       .default('pending'),
     priority: integer('priority').notNull().default(0),
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(3),
-    /** Progress + resume point. Long jobs on this laptop *will* be interrupted. */
-    checkpoint: text('checkpoint', { mode: 'json' }),
+    /** Progress + resume point, written by each step before it returns. */
+    checkpoint: jsonb('checkpoint'),
     progress: real('progress').notNull().default(0),
     progressLabel: text('progress_label'),
     lastError: text('last_error'),
-    runAfter: integer('run_after').notNull().default(now),
-    claimedAt: integer('claimed_at'),
-    heartbeatAt: integer('heartbeat_at'),
-    startedAt: integer('started_at'),
-    finishedAt: integer('finished_at'),
-    createdAt: integer('created_at').notNull().default(now),
+    runAfter: timestamp('run_after', { withTimezone: true }).notNull().default(now),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [
     index('jobs_claim_idx').on(t.status, t.priority, t.runAfter),
@@ -389,5 +386,6 @@ export type NewAccount = typeof accounts.$inferInsert;
 export type Post = typeof posts.$inferSelect;
 export type NewPost = typeof posts.$inferInsert;
 export type Job = typeof jobs.$inferSelect;
+export type NewJob = typeof jobs.$inferInsert;
 export type Run = typeof runs.$inferSelect;
 export type QuotaBudget = typeof quotaBudget.$inferSelect;
