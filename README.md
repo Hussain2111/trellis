@@ -10,16 +10,36 @@ whole thing runs as HTTP functions and a resumable jobs table.
 
 ## Where this is
 
-**Stage 1 of 8 is built**: schema, jobs infrastructure, and the daily
-keepalive cron. See [`AGENTS.md`](AGENTS.md) for the full spec and build
-order, and [`NOTES.md`](NOTES.md) for the migration log, deviations, and
-what's verified so far. Everything past Stage 1 (the scan pipeline, analysis
-engine, drafts, chat, scheduling) lands in the stages that follow, each
-gated on its own tests and a manual smoke test before the next one starts.
+**All 8 stages are built**: scan pipeline, competitor/niche discovery, the
+deterministic analysis engine, draft generation, slide rendering, the chat
+coach, scheduling + Graph API publishing, and a UI page for every one of
+them. See [`AGENTS.md`](AGENTS.md) for the full spec and build order, and
+[`NOTES.md`](NOTES.md) for the migration log, real bugs found, deliberate
+deviations, and exactly what has (and hasn't) been exercised against a real
+Supabase project, real Apify credentials, and a real Gemini key — none of
+which exist for this build yet, so those integrations are tested against
+fixtures and fakes, not live traffic.
 
 An earlier local-first version of this project (SQLite, Ollama, a desktop
 worker process) lives in [`legacy/`](legacy/) for reference. It is not part
 of the build — see the migration note in `NOTES.md` for why.
+
+## Pages
+
+One field on the dashboard — an Instagram handle — kicks off the entire
+pipeline; everything downstream runs automatically and lands on its own page:
+
+| Route          | Shows                                                             |
+| -------------- | ----------------------------------------------------------------- |
+| `/`            | Account summary, recent jobs                                      |
+| `/posts`       | Your posts, joined with computed features and hook classification |
+| `/competitors` | The auto-discovered competitor pool and its sample-size warning   |
+| `/gap`         | The headline gap and all 5 winning patterns, each with receipts   |
+| `/voice`       | Your extracted writing-voice profile                              |
+| `/drafts`      | Generated drafts, rendered slides, and a way to schedule one      |
+| `/calendar`    | Scheduled posts, with unschedule / mark-posted actions            |
+| `/chat`        | A coach grounded in everything above, via read-only tools         |
+| `/settings`    | The $0.00 cost check, provider config, recent calls               |
 
 ## The constraints everything else follows from
 
@@ -53,6 +73,12 @@ LOCKED`, so a cron tick and a webhook landing at the same moment can't
 - **Keepalive** — `/api/cron/keepalive`, on a daily Vercel Cron schedule,
   does a real write against Postgres so a free Supabase project (which
   pauses after 7 days idle) never goes to sleep.
+- **Slides** — carousel and single-image drafts render their text
+  deterministically (Satori + resvg); only the background may come from a
+  free image model, never the lettering.
+- **Publishing** — the Instagram Graph API, free under Standard Access for a
+  self-owned account. Off by default (`ENABLE_IG_PUBLISHING=false`) — see
+  [`docs/instagram-setup.md`](docs/instagram-setup.md) to turn it on.
 
 ## Commands
 
