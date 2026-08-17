@@ -111,12 +111,11 @@ export class ApifyScraper implements ScraperProvider {
       ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
       : `${appUrl()}/api/webhooks/apify`;
 
-    // Input shape differs per actor. These are the fields common to
-    // no-cookies Instagram profile-posts actors; confirm against the actor's
-    // Store page and record drift in NOTES.md.
+    // Confirmed against a real run of apify/instagram-profile-scraper: the
+    // required field is the plural `usernames`, not `username` — see NOTES.md.
     const run = await this.client.actor(this.actor).start(
       {
-        username: [request.handle],
+        usernames: [request.handle],
         resultsType: 'posts',
         resultsLimit: request.limit,
       },

@@ -641,6 +641,40 @@ of AI SDK tools.
 
 ---
 
+## Deployed to real infrastructure — first live bugs found
+
+The app is now actually deployed to Vercel + a real Supabase project. Two
+real, environment-only bugs turned up that no amount of local/CI testing
+against fixtures could have caught, since both are about the shape of a
+real external system rather than this codebase's own logic:
+
+- **`apify/instagram-profile-scraper`'s real input schema uses `usernames`
+  (plural), not `username`.** `ApifyScraper.start()` (`lib/providers/scraper/apify.ts`)
+  sent `{ username: [handle], ... }`; the actor rejected every live run with
+  `Input is not valid: Field input.usernames is required`. This is exactly
+  the drift the code's own comment warned was unverified ("confirm against
+  the actor's Store page and record drift in NOTES.md" — Stage 2). Fixed by
+  renaming the field. No test caught this because every scan test runs
+  against `FixtureScraper`/`FakeScraper`, which never construct a real Apify
+  actor input payload — this class of bug is only reachable by a real
+  `SCRAPE_MODE=live` run, which is why the spec's own fixtures-first
+  discipline flags it as a known gap rather than a false sense of coverage.
+  The hashtag actor's input shape (`startHashtag()`) is unverified for the
+  same reason and may have the same class of bug — watch for it once
+  competitor discovery runs live.
+- **Vercel environment variable footguns, not code bugs, but worth recording
+  since they cost real deploy cycles:** a variable marked "Sensitive" in
+  Vercel's dashboard becomes write-only — its value can never be viewed
+  again, only overwritten, which made a failed save indistinguishable from
+  a successful one until the value was re-entered with Sensitive off. And a
+  variable added without every target environment (Production vs. Preview
+  vs. Development) checked silently doesn't apply to the environment you
+  think it does. Neither is a Trellis bug, but `/settings` rendering the
+  resolved `SCRAPE_MODE`/`ENABLE_IG_PUBLISHING`/etc. directly from
+  `env()` turned out to be the actual reliable way to confirm a Vercel env
+  var change had taken effect — more reliable than the Vercel dashboard
+  itself, which is worth keeping in mind for any future config debugging.
+
 ## Not yet exercised against reality
 
 - **Supabase.** Migrations were run against a local Postgres 16, not an
@@ -651,17 +685,17 @@ of AI SDK tools.
 - **Vercel Cron.** `vercel.json`'s schedule and the `CRON_SECRET` header
   contract are per Vercel's documented behavior, not yet deployed and
   observed.
-- **A real Apify actor call**, for both the profile-posts actor and the
-  hashtag actor (`startHashtag()`, `APIFY_HASHTAG_ACTOR`). Input/webhook
-  shapes are best-effort from Apify's documented client API, not verified
-  against a real actor run — no `APIFY_TOKEN` exists for this build yet.
-  `posts.raw` keeps the untouched payload precisely so re-normalisation after
-  drift costs nothing. The webhook _receiver_ is tested (mocked client), but
-  the actual webhook _delivery_ from Apify to a deployed `/api/webhooks/apify`
-  is not — that needs a real public deployment to observe. In particular,
-  whether `apify/instagram-hashtag-scraper` (or whatever hashtag actor ends
-  up configured) accepts a bare `hashtags: [tag]` input the way assumed here
-  is unverified.
+- **The hashtag actor** (`startHashtag()`, `APIFY_HASHTAG_ACTOR`) — unlike
+  the profile-posts actor (see above, now fixed and live-verified), the
+  hashtag actor's input shape is still unconfirmed against a real run;
+  whether `apify/instagram-hashtag-scraper` accepts a bare `hashtags: [tag]`
+  input the way assumed here is unverified, and may have the same class of
+  field-name drift the profile actor did. `posts.raw` keeps the untouched
+  payload precisely so re-normalisation after drift costs nothing. The
+  webhook _receiver_ is tested (mocked client), but the actual webhook
+  _delivery_ from Apify to the deployed `/api/webhooks/apify` has not yet
+  been observed end-to-end (a live scan's completion webhook firing
+  correctly hasn't been confirmed as of this note).
 - **Gemini.** No live call yet — `GoogleLlm` is written and typechecked
   (`lib/providers/llm/google.ts`) but every test in Stage 3 runs against
   `FakeLlm`; no `GOOGLE_GENERATIVE_AI_API_KEY` exists for this build yet.
