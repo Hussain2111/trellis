@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
-import { db, sqlite } from '../db/client';
+import { db } from '../db/client';
 import { postFeatures, posts, type Post } from '../db/schema';
-import { median, percentileRank, robustZ, trailingMedian } from './stats';
+import { median, robustZ, trailingMedian } from './stats';
 
 /**
  * Layer A: per-post features, computed deterministically. Free, exact, and
@@ -35,20 +35,14 @@ export function firstLine(caption: string | null): string {
   return line ?? '';
 }
 
-/**
- * The string that stands in for "how this post opens". The hook is what the
- * analysis clusters on, so it strips hashtag walls and leading mentions that
- * would otherwise dominate the embedding.
- */
-export function hookText(caption: string | null, spokenHook?: string | null): string {
-  const first = firstLine(caption)
+/** The string that stands in for "how this post opens" — reels are caption-only for v1, no transcription. */
+export function hookText(caption: string | null): string {
+  return firstLine(caption)
     .replace(HASHTAG_RE, ' ')
     .replace(MENTION_RE, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
-  const spoken = (spokenHook ?? '').replace(/\s+/g, ' ').trim();
-  if (spoken && first) return `${spoken} — ${first}`.slice(0, 300);
-  return (spoken || first).slice(0, 300);
+    .trim()
+    .slice(0, 300);
 }
 
 export function countMatches(text: string, re: RegExp): number {
@@ -80,22 +74,21 @@ export function engagementRate(post: Post, followers: number | null): number | n
   return interactions / followers;
 }
 
-export function computeFeatures(post: Post, followers: number | null, spokenHook?: string | null): ComputedFeatures {
+export function computeFeatures(post: Post, followers: number | null): ComputedFeatures {
   const caption = post.caption ?? '';
   const line = firstLine(caption);
-  const date = post.takenAt ? new Date(post.takenAt * 1000) : null;
 
   return {
     captionLength: caption.length,
     firstLine: line,
-    hookText: hookText(caption, spokenHook),
+    hookText: hookText(caption),
     hashtagCount: countMatches(caption, HASHTAG_RE),
     mentionCount: countMatches(caption, MENTION_RE),
     emojiCount: countMatches(caption, EMOJI_RE),
     hasQuestion: /\?/.test(line) || /\?/.test(caption.slice(0, 220)),
     hasCta: CTA_PATTERNS.some((re) => re.test(caption)),
-    postedHour: date ? date.getHours() : null,
-    postedDow: date ? date.getDay() : null,
+    postedHour: post.takenAt ? post.takenAt.getUTCHours() : null,
+    postedDow: post.takenAt ? post.takenAt.getUTCDay() : null,
     engagementRate: engagementRate(post, followers),
   };
 }
@@ -115,10 +108,12 @@ export function markOutliers(
   multiplier: number,
   window = 20,
 ): Map<number, { isOutlier: boolean; likesZ: number; viewsZ: number }> {
-  const chronological = [...rows].sort((a, b) => (a.post.takenAt ?? 0) - (b.post.takenAt ?? 0));
+  const chronological = [...rows].sort(
+    (a, b) => (a.post.takenAt?.getTime() ?? 0) - (b.post.takenAt?.getTime() ?? 0),
+  );
 
-  const likeSeries = chronological.map((r) => (r.post.likes ?? 0));
-  const viewSeries = chronological.map((r) => (r.post.views ?? r.post.plays ?? 0));
+  const likeSeries = chronological.map((r) => r.post.likes ?? 0);
+  const viewSeries = chronological.map((r) => r.post.views ?? r.post.plays ?? 0);
   const allLikes = likeSeries.filter((v) => v > 0);
   const allViews = viewSeries.filter((v) => v > 0);
 
@@ -141,31 +136,26 @@ export function markOutliers(
 }
 
 /** Recompute and persist features for one account. Idempotent. */
-export function persistFeatures(
+export async function persistFeatures(
   accountId: number,
   followers: number | null,
   multiplier: number,
-  spokenHooks: Map<number, string> = new Map(),
-): number {
-  const rows = db().select().from(posts).where(eq(posts.accountId, accountId)).all();
+): Promise<number> {
+  const rows = await db().select().from(posts).where(eq(posts.accountId, accountId));
   if (rows.length === 0) return 0;
 
-  const withRates = rows.map((post) => ({
-    post,
-    engagementRate: engagementRate(post, followers),
-  }));
+  const withRates = rows.map((post) => ({ post, engagementRate: engagementRate(post, followers) }));
   const outliers = markOutliers(withRates, multiplier);
 
-  const run = sqlite().transaction(() => {
+  await db().transaction(async (tx) => {
     for (const post of rows) {
-      const f = computeFeatures(post, followers, spokenHooks.get(post.id) ?? null);
+      const f = computeFeatures(post, followers);
       const o = outliers.get(post.id);
       const values = {
         postId: post.id,
         captionLength: f.captionLength,
         firstLine: f.firstLine,
         hookText: f.hookText,
-        spokenHook: spokenHooks.get(post.id) ?? null,
         hashtagCount: f.hashtagCount,
         mentionCount: f.mentionCount,
         emojiCount: f.emojiCount,
@@ -177,50 +167,16 @@ export function persistFeatures(
         likesZ: o?.likesZ ?? 0,
         viewsZ: o?.viewsZ ?? 0,
         isOutlier: o?.isOutlier ?? false,
-        computedAt: Math.floor(Date.now() / 1000),
+        computedAt: new Date(),
       };
-      db()
+      await tx
         .insert(postFeatures)
         .values(values)
-        .onConflictDoUpdate({ target: postFeatures.postId, set: values })
-        .run();
+        .onConflictDoUpdate({ target: postFeatures.postId, set: values });
     }
   });
-  run();
 
   return rows.length;
-}
-
-export interface CadenceBucket {
-  weekStart: number;
-  total: number;
-  byType: Record<string, number>;
-}
-
-/** Posting cadence by format over time. Pure arithmetic. */
-export function cadenceByWeek(rows: Post[], weeks = 12): CadenceBucket[] {
-  const nowS = Math.floor(Date.now() / 1000);
-  const weekS = 7 * 86400;
-  const buckets = new Map<number, CadenceBucket>();
-
-  for (let i = 0; i < weeks; i++) {
-    const weekStart = nowS - (i + 1) * weekS;
-    buckets.set(weekStart, { weekStart, total: 0, byType: {} });
-  }
-
-  for (const post of rows) {
-    if (!post.takenAt) continue;
-    const age = nowS - post.takenAt;
-    if (age < 0 || age > weeks * weekS) continue;
-    const index = Math.floor(age / weekS);
-    const weekStart = nowS - (index + 1) * weekS;
-    const bucket = buckets.get(weekStart);
-    if (!bucket) continue;
-    bucket.total++;
-    bucket.byType[post.type] = (bucket.byType[post.type] ?? 0) + 1;
-  }
-
-  return [...buckets.values()].sort((a, b) => a.weekStart - b.weekStart);
 }
 
 export interface FormatSummary {
@@ -256,5 +212,3 @@ export function summariseByFormat(rows: Post[], followers: number | null): Forma
     })
     .sort((a, b) => b.count - a.count);
 }
-
-export { percentileRank };

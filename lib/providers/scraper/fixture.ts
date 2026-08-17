@@ -26,7 +26,10 @@ export class FixtureScraper implements ScraperProvider {
     }
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
     return files.length > 0
-      ? { ok: true, detail: `${files.length} fixture(s): ${files.map((f) => f.replace('.json', '')).join(', ')}` }
+      ? {
+          ok: true,
+          detail: `${files.length} fixture(s): ${files.map((f) => f.replace('.json', '')).join(', ')}`,
+        }
       : { ok: false, detail: 'No fixtures saved yet. Run one live scan with SCRAPE_MODE=live.' };
   }
 
@@ -67,7 +70,7 @@ export class FixtureScraper implements ScraperProvider {
       }
     }
 
-    recordRun({
+    await recordRun({
       provider: this.id,
       operation: 'scrape',
       status: 'ok',

@@ -1,218 +1,111 @@
-import Link from 'next/link';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { accounts, postFeatures, posts } from '@/lib/db/schema';
-import { labelsForPosts } from '@/lib/analysis/archetypes';
-import { summariseByFormat, cadenceByWeek } from '@/lib/analysis/features';
+import { hookLabels, postFeatures, posts } from '@/lib/db/schema';
 import { selfAccount } from '@/lib/ingest/upsert';
-import { getSettings } from '@/lib/settings';
+import { summariseByFormat } from '@/lib/analysis/features';
 import { Badge, Empty, Panel, PanelHeader, Stat } from '@/components/ui/primitives';
-import { Bar, Table } from '@/components/ui/data';
-import { ActionButton } from '@/components/action-button';
-import { runJobAction, scanAccountAction } from '../actions';
+import { Table } from '@/components/ui/data';
 import { formatNumber, formatRelative } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
-export default async function PostsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ type?: string; sort?: string; outliers?: string }>;
-}): Promise<React.JSX.Element> {
-  const params = await searchParams;
-  const self = selfAccount();
-  const settings = getSettings();
+export default async function PostsPage(): Promise<React.JSX.Element> {
+  const self = await selfAccount();
 
   if (!self) {
     return (
       <div className="mx-auto max-w-5xl px-6 py-6">
-        <h1 className="mb-4 text-[20px] font-semibold">Posts</h1>
         <Panel>
+          <PanelHeader title="Posts" />
           <Empty
-            title="No account marked as yours."
-            detail="Add your handle in Settings, then scan it. Everything downstream needs a corpus to work from."
+            title="No account scanned yet."
+            detail="Scan an Instagram handle from the dashboard first."
           />
         </Panel>
       </div>
     );
   }
 
-  const rows = db()
-    .select({ post: posts, features: postFeatures })
+  const rows = await db()
+    .select({
+      post: posts,
+      isOutlier: postFeatures.isOutlier,
+      engagementRate: postFeatures.engagementRate,
+      hasCta: postFeatures.hasCta,
+      hasQuestion: postFeatures.hasQuestion,
+      hookCategory: hookLabels.category,
+    })
     .from(posts)
     .leftJoin(postFeatures, eq(postFeatures.postId, posts.id))
+    .leftJoin(hookLabels, eq(hookLabels.postId, posts.id))
     .where(eq(posts.accountId, self.id))
-    .orderBy(params.sort === 'top' ? desc(posts.likes) : desc(posts.takenAt))
-    .all();
+    .orderBy(desc(posts.takenAt));
 
-  const filtered = rows.filter(
-    (r) =>
-      (!params.type || params.type === 'all' || r.post.type === params.type) &&
-      (params.outliers !== '1' || r.features?.isOutlier),
+  const byFormat = summariseByFormat(
+    rows.map((r) => r.post),
+    self.followers,
   );
-
-  const labels = new Map(
-    labelsForPosts(filtered.slice(0, 200).map((r) => r.post.id)).map((l) => [l.postId, l.name]),
-  );
-  const byFormat = summariseByFormat(rows.map((r) => r.post), self.followers);
-  const cadence = cadenceByWeek(rows.map((r) => r.post), 12);
-  const maxWeek = Math.max(1, ...cadence.map((c) => c.total));
-  const outlierCount = rows.filter((r) => r.features?.isOutlier).length;
-  const transcribed = rows.filter((r) => r.features?.spokenHook).length;
-
-  const types = ['all', 'reel', 'carousel', 'image', 'video'];
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[20px] leading-tight font-semibold">@{self.handle}</h1>
-          <p className="mt-1 text-[13px] text-ink-muted">
-            {formatNumber(rows.length)} posts · {formatNumber(self.followers)} followers · last
-            scanned {formatRelative(self.lastScrapedAt)}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ActionButton
-            action={scanAccountAction.bind(null, self.id, 100)}
-            label="scan"
-            confirm={`Scan @${self.handle}? This spends Apify credits unless SCRAPE_MODE is fixture or fake.`}
-          />
-          <ActionButton action={runJobAction.bind(null, 'compute_features')} label="recompute features" />
-          <ActionButton action={runJobAction.bind(null, 'transcribe_reels')} label="transcribe reels" />
-        </div>
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <header className="mb-5">
+        <h1 className="text-[20px] leading-tight font-semibold">@{self.handle} · Posts</h1>
+        <p className="mt-1 text-[13px] text-ink-muted">
+          {formatNumber(rows.length)} posts held · last scanned {formatRelative(self.lastScrapedAt)}
+        </p>
       </header>
 
-      <div className="mb-4 grid gap-4 lg:grid-cols-3">
-        <Panel className="lg:col-span-2">
+      {byFormat.length > 0 ? (
+        <Panel className="mb-4">
           <PanelHeader title="By format" />
-          <Table head={['format', 'n', 'median likes', 'median comments', 'median views', 'median ER']}>
+          <div
+            className="grid divide-x divide-line"
+            style={{ gridTemplateColumns: `repeat(${byFormat.length}, 1fr)` }}
+          >
             {byFormat.map((f) => (
-              <tr key={f.type}>
-                <td className="px-4 py-1.5 font-mono">{f.type}</td>
-                <td className="px-4 py-1.5 tabular">{f.count}</td>
-                <td className="px-4 py-1.5 tabular">{formatNumber(f.medianLikes)}</td>
-                <td className="px-4 py-1.5 tabular">{formatNumber(f.medianComments)}</td>
-                <td className="px-4 py-1.5 tabular">
-                  {f.medianViews === null ? '—' : formatNumber(f.medianViews)}
-                </td>
-                <td className="px-4 py-1.5 tabular">
-                  {(f.medianEngagementRate * 100).toFixed(2)}%
-                </td>
-              </tr>
+              <Stat
+                key={f.type}
+                label={`${f.type} (${f.count})`}
+                value={formatNumber(f.medianLikes)}
+                sub={`median likes · ${(f.medianEngagementRate * 100).toFixed(1)}% eng.`}
+              />
             ))}
-          </Table>
-        </Panel>
-
-        <Panel>
-          <PanelHeader title="Signal" />
-          <div className="grid grid-cols-2 divide-x divide-line border-b border-line">
-            <Stat
-              label="My winners"
-              value={<span className="tabular">{outlierCount}</span>}
-              tone="signal"
-              sub={`≥ ${settings.outlierMultiplier}× trailing median`}
-            />
-            <Stat
-              label="Spoken hooks"
-              value={<span className="tabular">{transcribed}</span>}
-              sub={transcribed === 0 ? 'run transcription' : 'from reel audio'}
-            />
-          </div>
-          <div className="px-4 py-3">
-            <div className="label mb-2">Cadence, last 12 weeks</div>
-            <div className="flex items-end gap-1">
-              {cadence.map((c) => (
-                <div key={c.weekStart} className="flex-1" title={`${c.total} posts`}>
-                  <div
-                    className="w-full bg-signal/70"
-                    style={{ height: `${Math.max(2, (c.total / maxWeek) * 44)}px` }}
-                  />
-                </div>
-              ))}
-            </div>
           </div>
         </Panel>
-      </div>
+      ) : null}
 
       <Panel>
-        <PanelHeader
-          title={`Posts (${filtered.length})`}
-          aside={
-            <div className="flex items-center gap-1">
-              {types.map((t) => (
-                <Link
-                  key={t}
-                  href={`/posts?type=${t}${params.sort ? `&sort=${params.sort}` : ''}${params.outliers === '1' ? '&outliers=1' : ''}`}
-                  className={
-                    (params.type ?? 'all') === t
-                      ? 'rounded-[3px] bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-ink'
-                      : 'rounded-[3px] px-2 py-0.5 font-mono text-[11px] text-ink-faint hover:text-ink'
-                  }
-                >
-                  {t}
-                </Link>
-              ))}
-              <span className="mx-1 h-3 w-px bg-line-strong" />
-              <Link
-                href={`/posts?type=${params.type ?? 'all'}&sort=${params.sort === 'top' ? 'recent' : 'top'}${params.outliers === '1' ? '&outliers=1' : ''}`}
-                className="rounded-[3px] px-2 py-0.5 font-mono text-[11px] text-ink-faint hover:text-ink"
-              >
-                {params.sort === 'top' ? 'by date' : 'by likes'}
-              </Link>
-              <Link
-                href={`/posts?type=${params.type ?? 'all'}${params.sort ? `&sort=${params.sort}` : ''}${params.outliers === '1' ? '' : '&outliers=1'}`}
-                className={
-                  params.outliers === '1'
-                    ? 'rounded-[3px] bg-signal/15 px-2 py-0.5 font-mono text-[11px] text-signal'
-                    : 'rounded-[3px] px-2 py-0.5 font-mono text-[11px] text-ink-faint hover:text-ink'
-                }
-              >
-                winners
-              </Link>
-            </div>
-          }
-        />
-        {filtered.length === 0 ? (
-          <Empty
-            title="Nothing here."
-            detail="Either the filter is too narrow, or this account has not been scanned yet."
-          />
+        <PanelHeader title="All posts" />
+        {rows.length === 0 ? (
+          <Empty title="No posts yet." detail="Run a scan from the dashboard." />
         ) : (
-          <Table head={['when', 'type', 'hook', 'archetype', 'likes', 'comments', 'ER', '']}>
-            {filtered.slice(0, 200).map(({ post, features }) => (
-              <tr key={post.id} className={features?.isOutlier ? 'bg-signal/[0.04]' : ''}>
-                <td className="px-4 py-1.5 whitespace-nowrap text-ink-faint">
-                  {formatRelative(post.takenAt)}
+          <Table head={['Posted', 'Type', 'Likes', 'Comments', 'Eng.', 'Hook', 'Flags']}>
+            {rows.map((r) => (
+              <tr key={r.post.id}>
+                <td className="px-4 py-2 whitespace-nowrap text-ink-muted">
+                  {r.post.takenAt ? new Date(r.post.takenAt).toLocaleDateString() : '—'}
                 </td>
-                <td className="px-4 py-1.5 font-mono">{post.type}</td>
-                <td className="max-w-[26rem] truncate px-4 py-1.5">
-                  {features?.hookText || features?.firstLine || '—'}
+                <td className="px-4 py-2 font-mono">{r.post.type}</td>
+                <td className="metric px-4 py-2">{formatNumber(r.post.likes)}</td>
+                <td className="metric px-4 py-2">{formatNumber(r.post.comments)}</td>
+                <td className="metric px-4 py-2">
+                  {r.engagementRate !== null ? `${(r.engagementRate * 100).toFixed(1)}%` : '—'}
                 </td>
-                <td className="px-4 py-1.5 text-ink-muted">{labels.get(post.id) ?? '—'}</td>
-                <td className="px-4 py-1.5 tabular">{formatNumber(post.likes)}</td>
-                <td className="px-4 py-1.5 tabular">{formatNumber(post.comments)}</td>
-                <td className="px-4 py-1.5 tabular">
-                  {features?.engagementRate ? `${(features.engagementRate * 100).toFixed(2)}%` : '—'}
+                <td className="max-w-xs truncate px-4 py-2 text-ink-muted">
+                  {r.hookCategory ? r.hookCategory.replace(/_/g, ' ') : '—'}
                 </td>
-                <td className="px-4 py-1.5">
-                  {features?.isOutlier ? <Badge tone="signal">winner</Badge> : null}
+                <td className="px-4 py-2">
+                  <div className="flex flex-wrap gap-1">
+                    {r.isOutlier ? <Badge tone="signal">winner</Badge> : null}
+                    {r.hasCta ? <Badge tone="good">cta</Badge> : null}
+                    {r.hasQuestion ? <Badge tone="info">question</Badge> : null}
+                  </div>
                 </td>
               </tr>
             ))}
           </Table>
         )}
-        {filtered.length > 200 ? (
-          <div className="border-t border-line px-4 py-2 text-[11px] text-ink-faint">
-            Showing the first 200 of {filtered.length}.
-          </div>
-        ) : null}
       </Panel>
     </div>
   );
-}
-
-export async function generateMetadata() {
-  const self = db().select().from(accounts).where(eq(accounts.role, 'self')).get();
-  return { title: self ? `Posts · @${self.handle}` : 'Posts' };
 }

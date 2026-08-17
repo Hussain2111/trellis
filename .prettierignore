@@ -1,0 +1,4 @@
+legacy/
+.next/
+node_modules/
+drizzle/

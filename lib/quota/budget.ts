@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { quotaBudget } from '../db/schema';
+import { quotaBudget, type QuotaBudget } from '../db/schema';
 
 /**
  * Free tiers are hostile and their published limits move. Nothing here is a
@@ -10,21 +10,27 @@ import { quotaBudget } from '../db/schema';
  */
 
 export type JobType =
-  | 'cluster_naming'
+  | 'niche_inference'
+  | 'hook_classification'
   | 'gap_analysis'
   | 'voice_profile'
   | 'draft_generation'
   | 'chat'
   | 'misc';
 
-/** Self-imposed shares of a day, not provider limits. Chat yields first. */
+/**
+ * Self-imposed shares of a day, not provider limits. Hook classification is
+ * one call per post, so it gets the largest share by far; chat yields first
+ * when the day runs short.
+ */
 export const DEFAULT_ALLOWANCES: Record<JobType, number> = {
-  cluster_naming: 4,
-  gap_analysis: 6,
-  voice_profile: 3,
-  draft_generation: 20,
+  niche_inference: 5,
+  hook_classification: 300,
+  gap_analysis: 10,
+  voice_profile: 5,
+  draft_generation: 30,
   chat: 60,
-  misc: 10,
+  misc: 20,
 };
 
 /** Order in which job types give up headroom when the day runs short. */
@@ -34,26 +40,25 @@ export const YIELD_ORDER: JobType[] = [
   'draft_generation',
   'voice_profile',
   'gap_analysis',
-  'cluster_naming',
+  'niche_inference',
+  'hook_classification',
 ];
 
-const nowS = (): number => Math.floor(Date.now() / 1000);
-
-function nextMidnight(): number {
+function nextMidnight(): Date {
   const d = new Date();
   d.setHours(24, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
+  return d;
 }
 
-function row(provider: string, jobType: JobType) {
-  const existing = db()
+async function row(provider: string, jobType: JobType): Promise<QuotaBudget> {
+  const [existing] = await db()
     .select()
     .from(quotaBudget)
     .where(and(eq(quotaBudget.provider, provider), eq(quotaBudget.jobType, jobType)))
-    .get();
+    .limit(1);
   if (existing) return rollIfStale(existing);
 
-  db()
+  await db()
     .insert(quotaBudget)
     .values({
       provider,
@@ -62,24 +67,24 @@ function row(provider: string, jobType: JobType) {
       consumedToday: 0,
       resetAt: nextMidnight(),
     })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 
-  return db()
+  const [created] = await db()
     .select()
     .from(quotaBudget)
     .where(and(eq(quotaBudget.provider, provider), eq(quotaBudget.jobType, jobType)))
-    .get()!;
+    .limit(1);
+  return created!;
 }
 
-function rollIfStale(r: typeof quotaBudget.$inferSelect) {
-  if (r.resetAt > nowS()) return r;
-  db()
+async function rollIfStale(r: QuotaBudget): Promise<QuotaBudget> {
+  if (r.resetAt.getTime() > Date.now()) return r;
+  const reset = nextMidnight();
+  await db()
     .update(quotaBudget)
-    .set({ consumedToday: 0, resetAt: nextMidnight(), exhaustedUntil: null })
-    .where(eq(quotaBudget.id, r.id))
-    .run();
-  return { ...r, consumedToday: 0, resetAt: nextMidnight(), exhaustedUntil: null };
+    .set({ consumedToday: 0, resetAt: reset, exhaustedUntil: null })
+    .where(eq(quotaBudget.id, r.id));
+  return { ...r, consumedToday: 0, resetAt: reset, exhaustedUntil: null };
 }
 
 export interface Headroom {
@@ -87,12 +92,12 @@ export interface Headroom {
   remaining: number;
   allowance: number;
   reason?: string;
-  resetAt: number;
+  resetAt: Date;
 }
 
-export function checkHeadroom(provider: string, jobType: JobType): Headroom {
-  const r = row(provider, jobType);
-  if (r.exhaustedUntil && r.exhaustedUntil > nowS()) {
+export async function checkHeadroom(provider: string, jobType: JobType): Promise<Headroom> {
+  const r = await row(provider, jobType);
+  if (r.exhaustedUntil && r.exhaustedUntil.getTime() > Date.now()) {
     return {
       allowed: false,
       remaining: 0,
@@ -111,44 +116,51 @@ export function checkHeadroom(provider: string, jobType: JobType): Headroom {
   };
 }
 
-export function consume(provider: string, jobType: JobType, n = 1): void {
-  const r = row(provider, jobType);
-  db()
+export async function consume(provider: string, jobType: JobType, n = 1): Promise<void> {
+  const r = await row(provider, jobType);
+  await db()
     .update(quotaBudget)
     .set({ consumedToday: r.consumedToday + n })
-    .where(eq(quotaBudget.id, r.id))
-    .run();
+    .where(eq(quotaBudget.id, r.id));
 }
 
 /**
  * A 429 that means "today is over". Everything for this provider is parked
  * until the reset the provider named, or midnight if it named none.
  */
-export function markDailyExhausted(provider: string, until?: number): void {
+export async function markDailyExhausted(provider: string, until?: Date): Promise<void> {
   const resetAt = until ?? nextMidnight();
   for (const jobType of Object.keys(DEFAULT_ALLOWANCES) as JobType[]) {
-    const r = row(provider, jobType);
-    db().update(quotaBudget).set({ exhaustedUntil: resetAt }).where(eq(quotaBudget.id, r.id)).run();
+    const r = await row(provider, jobType);
+    await db().update(quotaBudget).set({ exhaustedUntil: resetAt }).where(eq(quotaBudget.id, r.id));
   }
 }
 
 /** Record a limit we actually observed in a response header. Never hardcode one. */
-export function recordObservedLimit(provider: string, jobType: JobType, limit: number): void {
-  const r = row(provider, jobType);
-  db()
+export async function recordObservedLimit(
+  provider: string,
+  jobType: JobType,
+  limit: number,
+): Promise<void> {
+  const r = await row(provider, jobType);
+  await db()
     .update(quotaBudget)
-    .set({ observedLimit: limit, observedAt: nowS() })
-    .where(eq(quotaBudget.id, r.id))
-    .run();
+    .set({ observedLimit: limit, observedAt: new Date() })
+    .where(eq(quotaBudget.id, r.id));
 }
 
-export function setAllowance(provider: string, jobType: JobType, allowance: number): void {
-  const r = row(provider, jobType);
-  db().update(quotaBudget).set({ dailyAllowance: allowance }).where(eq(quotaBudget.id, r.id)).run();
+export async function setAllowance(
+  provider: string,
+  jobType: JobType,
+  allowance: number,
+): Promise<void> {
+  const r = await row(provider, jobType);
+  await db().update(quotaBudget).set({ dailyAllowance: allowance }).where(eq(quotaBudget.id, r.id));
 }
 
-export function allBudgets() {
-  return db().select().from(quotaBudget).all().map(rollIfStale);
+export async function allBudgets(): Promise<QuotaBudget[]> {
+  const rows = await db().select().from(quotaBudget);
+  return Promise.all(rows.map(rollIfStale));
 }
 
 /**

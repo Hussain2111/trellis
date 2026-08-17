@@ -9,7 +9,6 @@ const ROUTES: { href: string; label: string }[] = [
   { href: '/', label: 'Dashboard' },
   { href: '/posts', label: 'Posts' },
   { href: '/competitors', label: 'Competitors' },
-  { href: '/archetypes', label: 'Archetypes' },
   { href: '/gap', label: 'Gap' },
   { href: '/voice', label: 'Voice' },
   { href: '/drafts', label: 'Drafts' },

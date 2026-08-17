@@ -6,10 +6,10 @@ import type { ProviderHealth } from '../types';
 import type { CompleteRequest, LlmProvider } from './types';
 
 /**
- * Tier A. Google AI Studio's free tier — no credit card, so the key genuinely
- * cannot bill. Published limits move constantly (they were cut in Dec 2025 and
- * again in 2026), so nothing here assumes a number: limits are read from
- * response headers when present and otherwise learned from 429s.
+ * Google AI Studio's free tier — no credit card, so the key genuinely cannot
+ * bill. Published limits move constantly, so nothing here assumes a number:
+ * limits are read from response headers when present and otherwise learned
+ * from 429s (see lib/quota/budget.ts).
  */
 
 const DESCRIPTOR = {
@@ -24,7 +24,6 @@ export class GoogleLlm implements LlmProvider {
   readonly kind = DESCRIPTOR.kind;
   readonly costsMoney = DESCRIPTOR.costsMoney;
   readonly costNote = DESCRIPTOR.costNote;
-  readonly tier = 'A' as const;
   readonly model: string;
   private readonly apiKey: string;
 
@@ -72,13 +71,6 @@ export class GoogleLlm implements LlmProvider {
       prompt: request.prompt,
       temperature: request.temperature ?? 0.4,
       maxOutputTokens: request.maxOutputTokens ?? 4096,
-      ...(request.schema
-        ? {
-            providerOptions: {
-              google: { responseModalities: ['TEXT'] },
-            },
-          }
-        : {}),
       onStepFinish: ({ response }) => {
         observeRateLimitHeaders(response.headers, request.operation);
       },
@@ -94,7 +86,8 @@ export class GoogleLlm implements LlmProvider {
 }
 
 const QUOTA_JOB_TYPES = new Set<string>([
-  'cluster_naming',
+  'niche_inference',
+  'hook_classification',
   'gap_analysis',
   'voice_profile',
   'draft_generation',
@@ -125,7 +118,7 @@ export function observeRateLimitHeaders(
     const limit = Number.parseInt(value, 10);
     if (Number.isFinite(limit) && limit > 0) {
       const jobType = (QUOTA_JOB_TYPES.has(operation) ? operation : 'misc') as QuotaJobType;
-      recordObservedLimit('google', jobType, limit);
+      void recordObservedLimit('google', jobType, limit);
       return;
     }
   }

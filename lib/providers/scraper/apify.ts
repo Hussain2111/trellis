@@ -2,11 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ApifyClient } from 'apify-client';
 import { assertProviderAllowed } from '../guard';
+import { appUrl } from '../../app-url';
 import { estimateCost } from '../../ingest/budget';
 import { normalizeDataset } from '../../ingest/normalize';
 import { recordRun } from '../../runs/log';
 import type { ProviderHealth } from '../types';
-import type { CostEstimate, ScrapeRequest, ScrapeResult, ScraperProvider } from './types';
+import type {
+  CostEstimate,
+  ScrapedPost,
+  ScrapedProfile,
+  ScrapeResult,
+  ScraperProvider,
+} from './types';
 
 const DESCRIPTOR = {
   id: 'apify',
@@ -19,6 +26,23 @@ const DESCRIPTOR = {
 
 export const FIXTURE_DIR = 'fixtures';
 
+export interface StartedRun {
+  runId: string;
+  datasetId: string;
+}
+
+export interface CompletedRun {
+  status: string;
+  succeeded: boolean;
+  items: unknown[];
+}
+
+/**
+ * Fire-and-return: `start()` kicks off the actor and returns immediately —
+ * nothing here blocks for the actor's runtime, which can far exceed a Vercel
+ * function's duration ceiling. `fetchRun()` is called by the webhook receiver
+ * once Apify reports the run finished.
+ */
 export class ApifyScraper implements ScraperProvider {
   readonly id = DESCRIPTOR.id;
   readonly kind = DESCRIPTOR.kind;
@@ -26,16 +50,26 @@ export class ApifyScraper implements ScraperProvider {
   readonly costNote = DESCRIPTOR.costNote;
   private readonly client: ApifyClient;
   private readonly actor: string;
+  private readonly hashtagActor: string;
   private readonly monthlyAllowanceUsd: number;
+  private readonly webhookSecret: string | undefined;
 
-  constructor(options: { token: string; actor: string; monthlyAllowanceUsd: number }) {
+  constructor(options: {
+    token: string;
+    actor: string;
+    hashtagActor?: string;
+    monthlyAllowanceUsd: number;
+    webhookSecret?: string | undefined;
+  }) {
     assertProviderAllowed(DESCRIPTOR);
     if (!options.token) {
       throw new Error('APIFY_TOKEN is empty. Get a free token at https://console.apify.com/.');
     }
     this.client = new ApifyClient({ token: options.token });
     this.actor = options.actor;
+    this.hashtagActor = options.hashtagActor ?? options.actor;
     this.monthlyAllowanceUsd = options.monthlyAllowanceUsd;
+    this.webhookSecret = options.webhookSecret;
   }
 
   async health(): Promise<ProviderHealth> {
@@ -51,10 +85,19 @@ export class ApifyScraper implements ScraperProvider {
     return estimateCost(request.limit, this.monthlyAllowanceUsd);
   }
 
-  async scrape(request: ScrapeRequest): Promise<ScrapeResult> {
+  /** Not used on Vercel — kept only so the interface is uniform. See `start()`. */
+  async scrape(): Promise<ScrapeResult> {
+    throw new Error(
+      'ApifyScraper.scrape() blocks until the actor finishes, which can exceed a function timeout. ' +
+        'Use start() + the /api/webhooks/apify callback instead.',
+    );
+  }
+
+  /** Fires the actor and returns immediately. The webhook resumes the job on completion. */
+  async start(request: { handle: string; limit: number }): Promise<StartedRun> {
     const estimate = await this.estimate(request);
     if (!estimate.affordable) {
-      recordRun({
+      await recordRun({
         provider: this.id,
         operation: 'scrape',
         status: 'skipped',
@@ -64,99 +107,145 @@ export class ApifyScraper implements ScraperProvider {
       throw new Error(`Refusing to scrape: ${estimate.note}`);
     }
 
-    const started = Date.now();
-    request.onProgress?.(0, `starting ${this.actor}`);
+    const webhookUrl = this.webhookSecret
+      ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
+      : `${appUrl()}/api/webhooks/apify`;
 
-    try {
-      // Input shape differs per actor. These are the fields common to
-      // apify/instagram-scraper and the no-cookies profile actors; confirm
-      // against the actor's Store page and record drift in NOTES.md.
-      const run = await this.client.actor(this.actor).call({
-        directUrls: [`https://www.instagram.com/${request.handle}/`],
+    // Input shape differs per actor. These are the fields common to
+    // no-cookies Instagram profile-posts actors; confirm against the actor's
+    // Store page and record drift in NOTES.md.
+    const run = await this.client.actor(this.actor).start(
+      {
         username: [request.handle],
         resultsType: 'posts',
         resultsLimit: request.limit,
-        addParentData: true,
-        // Newest-first is what makes incremental scanning cheap.
-        onlyPostsNewerThan: undefined,
-      });
+      },
+      {
+        webhooks: [
+          {
+            eventTypes: [
+              'ACTOR.RUN.SUCCEEDED',
+              'ACTOR.RUN.FAILED',
+              'ACTOR.RUN.ABORTED',
+              'ACTOR.RUN.TIMED_OUT',
+            ],
+            requestUrl: webhookUrl,
+          },
+        ],
+      },
+    );
 
-      const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
-      request.onProgress?.(items.length, `fetched ${items.length} items`);
+    return { runId: run.id, datasetId: run.defaultDatasetId };
+  }
 
-      const { profile, posts } = normalizeDataset(items, request.handle);
+  /**
+   * Fires the hashtag-scraper actor for one hashtag. Same fire-and-return
+   * shape as `start()` — used by competitor discovery, which scans several
+   * hashtags per account and cannot afford to block on any of them.
+   */
+  async startHashtag(hashtag: string, limit: number): Promise<StartedRun> {
+    const webhookUrl = this.webhookSecret
+      ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
+      : `${appUrl()}/api/webhooks/apify`;
 
-      // Stop at the first already-known shortcode. Items come newest-first, so
-      // everything after it is already in the database.
-      let kept = posts;
-      let stopped = false;
-      if (request.stopAtShortcodes?.size) {
-        const index = posts.findIndex((p) => request.stopAtShortcodes!.has(p.shortcode));
-        if (index >= 0) {
-          kept = posts.slice(0, index);
-          stopped = true;
-        }
-      }
+    const run = await this.client.actor(this.hashtagActor).start(
+      { hashtags: [hashtag], resultsLimit: limit },
+      {
+        webhooks: [
+          {
+            eventTypes: [
+              'ACTOR.RUN.SUCCEEDED',
+              'ACTOR.RUN.FAILED',
+              'ACTOR.RUN.ABORTED',
+              'ACTOR.RUN.TIMED_OUT',
+            ],
+            requestUrl: webhookUrl,
+          },
+        ],
+      },
+    );
 
-      const itemsCharged = items.length;
-      const costEstimateUsd = estimate.costUsd * (itemsCharged / Math.max(request.limit, 1));
+    return { runId: run.id, datasetId: run.defaultDatasetId };
+  }
 
-      recordRun({
-        provider: this.id,
-        model: this.actor,
-        operation: 'scrape',
-        status: run.status === 'SUCCEEDED' ? 'ok' : 'error',
-        costEstimate: costEstimateUsd,
-        freeTier: true,
-        durationMs: Date.now() - started,
-        error: run.status === 'SUCCEEDED' ? null : `actor finished ${run.status}`,
-        meta: { handle: request.handle, items: itemsCharged, runId: run.id },
-      });
+  /** Called by the webhook handler once Apify reports the run is finished. */
+  async fetchRun(runId: string): Promise<CompletedRun> {
+    const run = await this.client.run(runId).get();
+    if (!run) throw new Error(`Apify run ${runId} not found`);
+    const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
+    return { status: run.status, succeeded: run.status === 'SUCCEEDED', items };
+  }
+}
 
-      return {
-        profile,
-        posts: kept,
-        // An actor that didn't succeed is partial data, and partial data is a
-        // normal state here — it just must never be rendered as complete.
-        complete: run.status === 'SUCCEEDED',
-        note:
-          run.status === 'SUCCEEDED'
-            ? stopped
-              ? `Stopped at a known post: ${kept.length} new of ${posts.length} fetched.`
-              : `${kept.length} posts.`
-            : `Actor finished with status ${run.status}. Treat this scan as partial.`,
-        itemsCharged,
-        costEstimateUsd,
-        raw: items,
-      };
-    } catch (error) {
-      recordRun({
-        provider: this.id,
-        model: this.actor,
-        operation: 'scrape',
-        status: 'error',
-        durationMs: Date.now() - started,
-        error: (error as Error).message,
-        meta: { handle: request.handle, items: 0 },
-      });
-      throw error;
+/** Normalizes a completed run's items and logs the spend. Shared by the webhook handler. */
+export async function ingestCompletedRun(
+  handle: string,
+  run: CompletedRun,
+  limit: number,
+  stopAtShortcodes?: Set<string>,
+): Promise<{
+  profile: ScrapedProfile | null;
+  posts: ScrapedPost[];
+  complete: boolean;
+  note: string;
+}> {
+  const { profile, posts } = normalizeDataset(run.items, handle);
+
+  let kept = posts;
+  let stopped = false;
+  if (stopAtShortcodes?.size) {
+    const index = posts.findIndex((p) => stopAtShortcodes.has(p.shortcode));
+    if (index >= 0) {
+      kept = posts.slice(0, index);
+      stopped = true;
     }
   }
+
+  await recordRun({
+    provider: 'apify',
+    operation: 'scrape',
+    status: run.succeeded ? 'ok' : 'error',
+    freeTier: true,
+    error: run.succeeded ? null : `actor finished ${run.status}`,
+    meta: { handle, items: run.items.length },
+  });
+
+  if (run.succeeded && kept.length > 0) {
+    const file = writeFixture(handle, run.items);
+    void file;
+  }
+
+  void limit;
+  return {
+    profile,
+    posts: kept,
+    complete: run.succeeded,
+    note: run.succeeded
+      ? stopped
+        ? `Stopped at a known post: ${kept.length} new of ${posts.length} fetched.`
+        : `${kept.length} posts.`
+      : `Actor finished with status ${run.status}. Treat this scan as partial.`,
+  };
 }
 
 /**
  * The first successful live response for an account is written to ./fixtures/
- * so the whole pipeline can be replayed offline forever after. You will iterate
- * on the analysis dozens of times and should not pay for it each time.
+ * so the whole pipeline can be replayed offline forever after. Best-effort:
+ * Vercel's filesystem is read-only outside /tmp, so this only actually
+ * persists in local development — that's fine, it's a dev convenience.
  */
-export function writeFixture(handle: string, raw: unknown): string {
-  const dir = path.join(process.cwd(), FIXTURE_DIR);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${handle.toLowerCase()}.json`);
-  if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, JSON.stringify(raw, null, 2));
+export function writeFixture(handle: string, raw: unknown): string | null {
+  try {
+    const dir = path.join(process.cwd(), FIXTURE_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${handle.toLowerCase()}.json`);
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, JSON.stringify(raw, null, 2));
+    }
+    return file;
+  } catch {
+    return null;
   }
-  return file;
 }
 
 export function fixturePath(handle: string): string {

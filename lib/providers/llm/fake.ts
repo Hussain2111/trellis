@@ -1,16 +1,10 @@
 import { z } from 'zod';
 import type { ProviderHealth } from '../types';
-import type {
-  CompleteRequest,
-  EmbeddingProvider,
-  EmbedResult,
-  LlmProvider,
-  Tier,
-} from './types';
+import type { CompleteRequest, LlmProvider } from './types';
 
 /**
- * Deterministic stand-ins so the whole pipeline runs offline with zero network
- * calls. Not "mocks with canned strings" — these produce shape-correct output
+ * Deterministic stand-in so the whole pipeline runs offline with zero network
+ * calls. Not "mocks with canned strings" — this produces shape-correct output
  * for any schema, which is what lets the analysis layer be tested end to end.
  */
 
@@ -19,14 +13,12 @@ export class FakeLlm implements LlmProvider {
   readonly kind = 'llm' as const;
   readonly costsMoney = false;
   readonly costNote = 'Fake provider. No network, no cost.';
-  readonly tier: Tier;
   readonly model: string;
   /** Every request this fake saw — assertions read it. */
   readonly calls: CompleteRequest<unknown>[] = [];
   private queued: string[] = [];
 
-  constructor(options: { tier?: Tier; model?: string; id?: string } = {}) {
-    this.tier = options.tier ?? 'A';
+  constructor(options: { model?: string; id?: string } = {}) {
     this.model = options.model ?? 'fake-1';
     this.id = options.id ?? 'fake';
   }
@@ -55,54 +47,6 @@ export class FakeLlm implements LlmProvider {
       completionTokens: Math.ceil(text.length / 4),
     };
   }
-}
-
-export class FakeEmbeddings implements EmbeddingProvider {
-  readonly id = 'fake-embed';
-  readonly kind = 'embedding' as const;
-  readonly costsMoney = false;
-  readonly costNote = 'Fake embeddings. No network, no cost.';
-  readonly model = 'fake-embed-768';
-  readonly dim: number;
-
-  constructor(dim = 768) {
-    this.dim = dim;
-  }
-
-  async health(): Promise<ProviderHealth> {
-    return { ok: true, detail: 'fake provider is always healthy' };
-  }
-
-  /**
-   * Hash-based pseudo-embeddings: stable across runs, and similar strings land
-   * near each other often enough that clustering tests are meaningful.
-   */
-  async embed(texts: string[]): Promise<EmbedResult> {
-    const vectors = texts.map((text) => {
-      const v = new Float32Array(this.dim);
-      const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
-      for (const token of tokens) {
-        const h = hash(token);
-        v[h % this.dim] = (v[h % this.dim] ?? 0) + 1;
-        v[(h >>> 8) % this.dim] = (v[(h >>> 8) % this.dim] ?? 0) + 0.5;
-      }
-      let norm = 0;
-      for (const x of v) norm += x * x;
-      norm = Math.sqrt(norm) || 1;
-      for (let i = 0; i < v.length; i++) v[i] = (v[i] ?? 0) / norm;
-      return v;
-    });
-    return { vectors, model: this.model, dim: this.dim };
-  }
-}
-
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
 }
 
 function echo(request: CompleteRequest<unknown>): string {

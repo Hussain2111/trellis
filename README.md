@@ -1,87 +1,105 @@
 # Trellis
 
-An Instagram coach that shows its work. Benchmarks your posts against your niche,
-names the one gap worth fixing, and drafts the content to close it — with the
-receipts behind every claim. Runs locally, costs nothing.
+An Instagram coach that shows its work. Benchmarks your posts against your
+niche, names the one gap worth fixing, and drafts the content to close it —
+with the receipts behind every claim. Single account, no login, $0/month.
 
-Single user, single account, no login. `npm run dev` and the first route is the
-dashboard.
+Cloud-hosted: **Vercel** (hosting + functions + cron) and **Supabase**
+(Postgres, free tier). There is no local server and no desktop process — the
+whole thing runs as HTTP functions and a resumable jobs table.
 
-All eleven milestones are built. The whole pipeline runs offline against fakes —
-`npm run seed:demo` proves it with no network, no credits and no API keys.
-See [`docs/setup.md`](docs/setup.md) to run it on your own data and
-[`NOTES.md`](NOTES.md) for measurements, deviations, and what has not yet
-touched a real service.
+## Where this is
 
-## The two constraints everything else follows from
+**All 8 stages are built**: scan pipeline, competitor/niche discovery, the
+deterministic analysis engine, draft generation, slide rendering, the chat
+coach, scheduling + Graph API publishing, and a UI page for every one of
+them. See [`AGENTS.md`](AGENTS.md) for the full spec and build order, and
+[`NOTES.md`](NOTES.md) for the migration log, real bugs found, deliberate
+deviations, and exactly what has (and hasn't) been exercised against a real
+Supabase project, real Apify credentials, and a real Gemini key — none of
+which exist for this build yet, so those integrations are tested against
+fixtures and fakes, not live traffic.
+
+An earlier local-first version of this project (SQLite, Ollama, a desktop
+worker process) lives in [`legacy/`](legacy/) for reference. It is not part
+of the build — see the migration note in `NOTES.md` for why.
+
+## Pages
+
+One field on the dashboard — an Instagram handle — kicks off the entire
+pipeline; everything downstream runs automatically and lands on its own page:
+
+| Route          | Shows                                                             |
+| -------------- | ----------------------------------------------------------------- |
+| `/`            | Account summary, recent jobs                                      |
+| `/posts`       | Your posts, joined with computed features and hook classification |
+| `/competitors` | The auto-discovered competitor pool and its sample-size warning   |
+| `/gap`         | The headline gap and all 5 winning patterns, each with receipts   |
+| `/voice`       | Your extracted writing-voice profile                              |
+| `/drafts`      | Generated drafts, rendered slides, and a way to schedule one      |
+| `/calendar`    | Scheduled posts, with unschedule / mark-posted actions            |
+| `/chat`        | A coach grounded in everything above, via read-only tools         |
+| `/settings`    | The $0.00 cost check, provider config, recent calls               |
+
+## The constraints everything else follows from
 
 1. **$0/month.** Every provider declares `costsMoney`. With
    `ALLOW_PAID_PROVIDERS=false` (the default), instantiating a billable one
    throws at startup and names it — there is no silent fallback to a paid API.
-   Settings shows a month-to-date total that should read `$0.00`.
-2. **A fanless ultrabook with no discrete GPU.** ~8 GB of usable RAM for a model
-   and single-digit tok/s prefill. Prompt evaluation, not generation, is the
-   bottleneck — so local prompts are capped and long-context reasoning goes to a
-   free cloud tier.
+2. **No auth.** This is a personal dashboard for one Instagram account,
+   reachable only by the person running it. No login, no sessions, no user
+   model — see `AGENTS.md`.
+3. **Vercel Hobby's function-duration ceiling.** Nothing blocks on a
+   multi-minute scrape or a model call. Long operations are rows in a `jobs`
+   table with checkpoints; a webhook or a short cron/API tick advances them
+   one step at a time.
 
 ## How it's put together
 
-**Two model tiers, both free.**
-
-- **Tier B — local (Ollama).** Embeddings, short constrained classification,
-  emergency chat fallback. Hard-capped at `TIER_B_MAX_PROMPT_TOKENS`; the router
-  throws on an oversized prompt rather than spending four minutes in prefill.
-- **Tier A — Google AI Studio free tier.** All long-context reasoning: cluster
-  naming, gap analysis, voice profile, drafts, chat. Rationed by a daily budget
-  per job type, and chat yields first when the day runs short.
-
-Every generated artifact records `generated_by`, so you can always see which
-model wrote what.
-
-**The analysis engine pushes work downhill.**
-
-- **Layer A — plain TypeScript.** Medians, follower-normalised engagement,
-  outlier detection, cadence, decay. No model involved, and it does more of the
-  work than people expect.
-- **Layer B — embed, cluster, name once.** Every post is embedded locally, then
-  clustered in TypeScript; a *single* Tier A call names the clusters. New posts
-  are assigned by proximity with no model call at all. Archetypes come from your
-  actual corpus rather than a model's idea of what categories should exist.
-- **Layer C — one Tier A call** over the compact aggregates, never the corpus.
-  Five patterns and one gap, each with its numbers and its `post_ids`, validated
-  back against Layer A before it's stored.
-
-**Nothing blocks on a model call.** Long operations are rows in a `jobs` table
-with checkpoints and visible progress, run by a separate worker process. On this
-machine, long jobs *will* be interrupted; they resume.
+- **Database** — Supabase Postgres via Drizzle (`drizzle-orm/postgres-js`),
+  connected through Supabase's pooler (transaction mode) so many concurrent
+  Vercel function invocations don't exhaust Postgres's connection limit.
+- **Model provider** — Gemini free tier for every LLM call (niche inference,
+  hook classification, gap analysis, voice profile, drafts, chat). There is
+  no local model tier in a serverless deployment.
+- **Scraping** — Apify's Instagram profile-posts actor, fixture-first. Set
+  `SCRAPE_MODE=fixture` while developing so nothing spends real Apify credit;
+  the first live scrape is captured to `./fixtures/` for replay.
+- **Jobs** — `lib/jobs/queue.ts` claims work with Postgres `FOR UPDATE SKIP
+LOCKED`, so a cron tick and a webhook landing at the same moment can't
+  double-claim a row. `lib/jobs/runner.ts` runs a time-boxed `runTick()` —
+  never an infinite loop — appropriate for a function with a wall-clock
+  ceiling.
+- **Keepalive** — `/api/cron/keepalive`, on a daily Vercel Cron schedule,
+  does a real write against Postgres so a free Supabase project (which
+  pauses after 7 days idle) never goes to sleep.
+- **Slides** — carousel and single-image drafts render their text
+  deterministically (Satori + resvg); only the background may come from a
+  free image model, never the lettering.
+- **Publishing** — the Instagram Graph API, free under Standard Access for a
+  self-owned account. Off by default (`ENABLE_IG_PUBLISHING=false`) — see
+  [`docs/instagram-setup.md`](docs/instagram-setup.md) to turn it on.
 
 ## Commands
 
-| | |
-|---|---|
-| `npm run dev` | Web + worker |
-| `npm run bench:llm` | Measure this machine, pick the local model, write `NOTES.md` |
-| `npm run seed:demo` | Run the entire pipeline on synthetic data, offline, free |
-| `npm run db:migrate` | Apply migrations |
+|                       |                                            |
+| --------------------- | ------------------------------------------ |
+| `npm run dev`         | Next dev server                            |
 | `npm run db:generate` | Generate a migration after a schema change |
-| `npm test` | Tests on the deterministic layer |
-| `npm run typecheck` | `tsc --noEmit` |
+| `npm run db:migrate`  | Apply migrations                           |
+| `npm test`            | Unit tests                                 |
+| `npm run typecheck`   | `tsc --noEmit`                             |
+| `npm run lint`        | ESLint                                     |
+| `npm run format`      | Prettier, write                            |
 
-## The pipeline
+## Local development
 
-Scan → features → transcribe → embed → cluster → name → analyse → voice →
-draft → render → schedule → publish.
+```bash
+npm install
+cp .env.example .env.local
+# point DATABASE_URL at a local Postgres, or a Supabase project
+npm run db:migrate
+npm run dev
+```
 
-Everything up to `analyse` is free and local. Only four steps ever spend the
-rationed cloud tier: naming the archetypes (one call), the gap analysis (one
-call), the voice profile (one call), and drafts (three or four per call).
-
-## Two things worth knowing before you start
-
-**Run the benchmark first.** `npm run bench:llm` measures what your machine
-actually does and writes the numbers into `NOTES.md`. Prefill speed — not
-generation — is what decides everything about how this is configured.
-
-**Leave `SCRAPE_MODE=fixture` while you're poking at it.** The first live scrape
-of an account is saved to `./fixtures/`, and fixture mode replays it forever at
-zero credit cost. Apify credits are the only genuinely finite resource here.
+There is no login. The first route is the dashboard.

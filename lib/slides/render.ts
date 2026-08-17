@@ -4,7 +4,6 @@ import satori from 'satori';
 import { Resvg } from '@resvg/resvg-js';
 import { Slide, SLIDE_SIZE, type SlideKind } from './template';
 import { paletteForDraft, type Palette } from './palette';
-import { ASSET_DIR } from './paths';
 
 /**
  * Slide text is always rendered deterministically. Backgrounds may or may not
@@ -83,9 +82,7 @@ export async function renderSlide(options: {
     { width: SLIDE_SIZE, height: SLIDE_SIZE, fonts: loadFonts() },
   );
 
-  const png = new Resvg(svg, { fitTo: { mode: 'width', value: SLIDE_SIZE } })
-    .render()
-    .asPng();
+  const png = new Resvg(svg, { fitTo: { mode: 'width', value: SLIDE_SIZE } }).render().asPng();
   return Buffer.from(png);
 }
 
@@ -102,12 +99,6 @@ export function slidesForDraft(body: unknown, hook: string, cta: string | null):
 
   if (cta) specs.push({ kind: 'cta', heading: cta });
   return specs;
-}
-
-export function assetDirFor(draftId: number): string {
-  const dir = path.join(ASSET_DIR, String(draftId));
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
 }
 
 export { paletteForDraft };

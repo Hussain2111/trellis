@@ -1,136 +1,79 @@
 import { describe, expect, it } from 'vitest';
-import { describeIssues, pruneEvidence, reconcile } from '@/lib/analysis/reconcile';
-import type { AggregateSnapshot } from '@/lib/analysis/aggregate';
-import type { GapAnalysis, Pattern } from '@/lib/prompts/gap-analysis.v1';
+import { computePatterns, type EnrichedPost } from '../lib/analysis/patterns';
+import { reconcilePatterns } from '../lib/analysis/reconcile';
 
-const AGGREGATE = `
-FORMAT MIX:
-  reel: me 20% (n=30) | niche 51% (n=200)
-  carousel: me 60% (n=90) | niche 22% (n=88)
-
-MY WINNERS (post_id, likes, type, hook):
-  101 | 5200 | reel | the setting nobody tells you about
-  102 | 4100 | reel | three mistakes killing your reach
-`;
-
-const snapshot = {
-  windowDays: 30,
-  niche: 'photography',
-  handle: 'me',
-  myFollowers: 5000,
-  counts: { mine: 120, niche: 288 },
-  formats: [],
-  traits: [],
-  archetypes: [{ archetypeId: 7 }],
-  decayed: [],
-  winners: [
-    { postId: 101, shortcode: 'A', likes: 5200, type: 'reel', hook: '' },
-    { postId: 102, shortcode: 'B', likes: 4100, type: 'reel', hook: '' },
-  ],
-  cadence: [],
-  pool: { accounts: [], totalPosts: 288, medianFollowers: 0, thin: false, warning: null },
-  inputsHash: 'abc',
-} as unknown as AggregateSnapshot;
-
-function pattern(overrides: Partial<Pattern> = {}): Pattern {
+let nextId = 1;
+function post(overrides: Partial<EnrichedPost>): EnrichedPost {
   return {
-    claim: 'Reels carry this niche and you are barely making them.',
-    niche_stat: '51% of posts',
-    my_stat: '20% of yours',
-    delta: '31 points behind',
-    evidence: [101],
+    id: nextId++,
+    role: 'competitor',
+    type: 'reel',
+    engagementRate: 0.05,
+    postedHour: 12,
+    hasCta: false,
+    hasQuestion: false,
+    hookCategory: 'other',
     ...overrides,
   };
 }
 
-function analysis(overrides: Partial<GapAnalysis> = {}): GapAnalysis {
-  return {
-    patterns: [pattern(), pattern(), pattern(), pattern(), pattern()],
-    gap: { ...pattern(), why_this_one: 'Because it is the largest and the most fixable of the five.' },
-    ...overrides,
-  };
+function corpus(): {
+  corpus: EnrichedPost[];
+  competitors: EnrichedPost[];
+  selfPosts: EnrichedPost[];
+} {
+  const competitors = [
+    post({ engagementRate: 0.9, hasCta: true, hasQuestion: true }),
+    ...Array.from({ length: 3 }, () =>
+      post({ engagementRate: 0.01, hasCta: false, hasQuestion: false }),
+    ),
+  ];
+  const selfPosts = [post({ role: 'self', hasCta: false }), post({ role: 'self', hasCta: true })];
+  return { corpus: [...competitors, ...selfPosts], competitors, selfPosts };
 }
 
-describe('evidence reconciliation', () => {
-  it('accepts claims whose numbers and receipts both check out', () => {
-    const result = reconcile(analysis(), snapshot, AGGREGATE);
-    expect(result.ok).toBe(true);
-    expect(result.issues).toEqual([]);
+describe('reconcilePatterns', () => {
+  it('finds no issues in a genuinely computed pattern set', () => {
+    const { corpus: full } = corpus();
+    const patterns = computePatterns(full);
+    expect(reconcilePatterns(patterns, full)).toEqual([]);
   });
 
-  it('rejects a claim with no receipts', () => {
-    const bad = analysis({
-      patterns: [pattern({ evidence: [] }), pattern(), pattern(), pattern(), pattern()],
-    });
-    const result = reconcile(bad, snapshot, AGGREGATE);
-    expect(result.ok).toBe(false);
-    expect(result.issues[0]?.problem).toContain('evidence is empty');
+  it('flags a post id that is not in the corpus', () => {
+    const { corpus: full } = corpus();
+    const patterns = computePatterns(full);
+    const tampered = patterns.map((p) =>
+      p.key === 'has_cta' ? { ...p, nichePostIds: [...p.nichePostIds, 999_999] } : p,
+    );
+    const issues = reconcilePatterns(tampered, full);
+    expect(issues.some((i) => i.reason.includes('not in the corpus'))).toBe(true);
   });
 
-  it('rejects post ids that were never in the aggregates', () => {
-    const bad = analysis({
-      patterns: [pattern({ evidence: [999] }), pattern(), pattern(), pattern(), pattern()],
-    });
-    const result = reconcile(bad, snapshot, AGGREGATE);
-    expect(result.ok).toBe(false);
-    expect(result.unknownEvidence).toContain(999);
+  it('flags a post id that does not satisfy the pattern predicate', () => {
+    const { corpus: full, selfPosts } = corpus();
+    const patterns = computePatterns(full);
+    // Claim a self post that does NOT have a CTA as evidence for the has_cta pattern.
+    const nonCtaSelfPost = selfPosts.find((p) => !p.hasCta)!;
+    const tampered = patterns.map((p) =>
+      p.key === 'has_cta' ? { ...p, myPostIds: [nonCtaSelfPost.id] } : p,
+    );
+    const issues = reconcilePatterns(tampered, full);
+    expect(issues.some((i) => i.reason.includes('does not satisfy'))).toBe(true);
   });
 
-  it('rejects a statistic the model invented', () => {
-    const bad = analysis({
-      patterns: [
-        pattern({ niche_stat: '87% of posts' }),
-        pattern(),
-        pattern(),
-        pattern(),
-        pattern(),
-      ],
-    });
-    const result = reconcile(bad, snapshot, AGGREGATE);
-    expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.problem.includes('87%'))).toBe(true);
+  it('flags a stat that does not match its recomputed value', () => {
+    const { corpus: full } = corpus();
+    const patterns = computePatterns(full);
+    const tampered = patterns.map((p) => (p.key === 'has_cta' ? { ...p, nicheStat: 0.01 } : p));
+    const issues = reconcilePatterns(tampered, full);
+    expect(issues.some((i) => i.reason.includes('recomputes to'))).toBe(true);
   });
 
-  it('allows a qualitative stat with no number in it', () => {
-    const soft = analysis({
-      patterns: [
-        pattern({ my_stat: 'almost never' }),
-        pattern(),
-        pattern(),
-        pattern(),
-        pattern(),
-      ],
-    });
-    expect(reconcile(soft, snapshot, AGGREGATE).ok).toBe(true);
-  });
-
-  it('checks the gap as strictly as the patterns', () => {
-    const bad = analysis();
-    bad.gap.evidence = [4242];
-    const result = reconcile(bad, snapshot, AGGREGATE);
-    expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.where === 'gap')).toBe(true);
-  });
-
-  it('notices the wrong number of patterns', () => {
-    const bad = analysis({ patterns: [pattern(), pattern()] });
-    const result = reconcile(bad, snapshot, AGGREGATE);
-    expect(result.issues.some((i) => i.problem.includes('expected exactly 5'))).toBe(true);
-  });
-
-  it('turns issues into something a repair prompt can act on', () => {
-    const bad = analysis({
-      patterns: [pattern({ evidence: [] }), pattern(), pattern(), pattern(), pattern()],
-    });
-    const text = describeIssues(reconcile(bad, snapshot, AGGREGATE).issues);
-    expect(text).toContain('pattern 1');
-  });
-
-  it('prunes unverifiable evidence rather than presenting it as fact', () => {
-    const bad = analysis({
-      patterns: [pattern({ evidence: [101, 999] }), pattern(), pattern(), pattern(), pattern()],
-    });
-    const pruned = pruneEvidence(bad, snapshot);
-    expect(pruned.patterns[0]!.evidence).toEqual([101]);
+  it('rejects an unknown pattern key rather than silently passing', () => {
+    const { corpus: full } = corpus();
+    const patterns = computePatterns(full);
+    const tampered = patterns.map((p) => (p.key === 'has_cta' ? { ...p, key: 'made_up_key' } : p));
+    const issues = reconcilePatterns(tampered, full);
+    expect(issues.some((i) => i.patternKey === 'made_up_key')).toBe(true);
   });
 });

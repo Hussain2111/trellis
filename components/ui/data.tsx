@@ -29,7 +29,15 @@ export function Delta({
 }
 
 /** A percentage with its sample size beside it — never one without the other. */
-export function Share({ share, n, total }: { share: number; n: number; total: number }): React.JSX.Element {
+export function Share({
+  share,
+  n,
+  total,
+}: {
+  share: number;
+  n: number;
+  total: number;
+}): React.JSX.Element {
   return (
     <span className="metric whitespace-nowrap">
       {(share * 100).toFixed(0)}%
@@ -53,7 +61,15 @@ export function GeneratedBy({ value }: { value: string | null }): React.JSX.Elem
   );
 }
 
-export function Bar({ value, max, tone = 'signal' }: { value: number; max: number; tone?: 'signal' | 'muted' }): React.JSX.Element {
+export function Bar({
+  value,
+  max,
+  tone = 'signal',
+}: {
+  value: number;
+  max: number;
+  tone?: 'signal' | 'muted';
+}): React.JSX.Element {
   const pct = max === 0 ? 0 : Math.min(100, (value / max) * 100);
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">

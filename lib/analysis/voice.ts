@@ -1,4 +1,4 @@
-import { desc, eq, isNotNull, and } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db/client';
 import { posts, voiceProfile as voiceTable } from '../db/schema';
 import { renderVoiceForPrompt, type VoiceFields } from '../prompts/voice-profile.v1';
@@ -9,92 +9,72 @@ export interface ActiveVoice {
   version: number;
   markdown: string;
   fields: VoiceFields;
-  editedByUser: boolean;
   generatedBy: string;
 }
 
-export function activeVoice(): ActiveVoice | null {
-  const row = db()
+export async function activeVoice(): Promise<ActiveVoice | null> {
+  const [row] = await db()
     .select()
     .from(voiceTable)
     .where(eq(voiceTable.active, true))
     .orderBy(desc(voiceTable.version))
-    .limit(1)
-    .get();
+    .limit(1);
   if (!row) return null;
   return {
     id: row.id,
     version: row.version,
     markdown: row.markdown,
     fields: row.fields as VoiceFields,
-    editedByUser: row.editedByUser,
     generatedBy: row.generatedBy,
   };
 }
 
-export function voiceVersions() {
-  return db().select().from(voiceTable).orderBy(desc(voiceTable.version)).all();
-}
-
-/**
- * Store a new version. Versions are never overwritten — a regeneration you
- * dislike should be a revert, not a loss.
- */
-export function saveVoice(input: {
+/** Store a new version. Versions are never overwritten — a regeneration you dislike should be a revert, not a loss. */
+export async function saveVoice(input: {
   markdown: string;
   fields: VoiceFields;
   generatedBy: string;
-  editedByUser: boolean;
-}): number {
-  const latest = db()
+}): Promise<number> {
+  const [latest] = await db()
     .select({ version: voiceTable.version })
     .from(voiceTable)
     .orderBy(desc(voiceTable.version))
-    .limit(1)
-    .get();
+    .limit(1);
   const version = (latest?.version ?? 0) + 1;
 
-  db().update(voiceTable).set({ active: false }).where(eq(voiceTable.active, true)).run();
-  const row = db()
-    .insert(voiceTable)
-    .values({
-      version,
-      markdown: input.markdown,
-      fields: input.fields,
-      editedByUser: input.editedByUser,
-      active: true,
-      generatedBy: input.generatedBy,
-    })
-    .returning({ id: voiceTable.id })
-    .get();
-  return row.id;
-}
-
-export function activateVoiceVersion(id: number): void {
-  db().update(voiceTable).set({ active: false }).where(eq(voiceTable.active, true)).run();
-  db().update(voiceTable).set({ active: true }).where(eq(voiceTable.id, id)).run();
+  return db().transaction(async (tx) => {
+    await tx.update(voiceTable).set({ active: false }).where(eq(voiceTable.active, true));
+    const [row] = await tx
+      .insert(voiceTable)
+      .values({
+        version,
+        markdown: input.markdown,
+        fields: input.fields,
+        active: true,
+        generatedBy: input.generatedBy,
+      })
+      .returning({ id: voiceTable.id });
+    return row!.id;
+  });
 }
 
 /** The compact block injected into generation prompts. */
-export function voiceBlock(): string {
-  const voice = activeVoice();
-  if (!voice) {
+export async function voiceBlock(): Promise<string> {
+  const voice = await activeVoice();
+  if (!voice)
     return 'VOICE — no profile yet. Write plainly and specifically; avoid marketing register.';
-  }
-  return renderVoiceForPrompt(voice.markdown, voice.fields);
+  return renderVoiceForPrompt(voice.fields);
 }
 
 /** My best captions, which is all the voice profile needs to see. */
-export function topCaptionsForVoice(limit: number): string[] {
-  const self = selfAccount();
+export async function topCaptionsForVoice(limit: number): Promise<string[]> {
+  const self = await selfAccount();
   if (!self) return [];
-  return db()
+  const rows = await db()
     .select({ caption: posts.caption })
     .from(posts)
     .where(and(eq(posts.accountId, self.id), isNotNull(posts.caption)))
     .orderBy(desc(posts.likes))
-    .limit(limit)
-    .all()
-    .map((r) => r.caption ?? '')
-    .filter((c) => c.trim().length > 40);
+    .limit(limit);
+  return rows.map((r) => r.caption ?? '').filter((c) => c.trim().length > 40);
 }

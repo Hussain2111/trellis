@@ -1,155 +1,127 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { dropTempDb, useTempDb } from './helpers';
-import { normalizeDataset, normalizePost, normalizePostType } from '@/lib/ingest/normalize';
-import { estimateCost } from '@/lib/ingest/budget';
+import { eq } from 'drizzle-orm';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { closeDb, db } from '../lib/db/client';
+import { accounts, jobs, posts } from '../lib/db/schema';
 import {
+  getAccount,
   knownShortcodes,
-  isScanDue,
-  listAccounts,
+  markScanned,
+  selfAccount,
   upsertAccount,
   upsertPosts,
-} from '@/lib/ingest/upsert';
-import { FakeScraper } from '@/lib/providers/scraper/fake';
-import { recordRun } from '@/lib/runs/log';
-import type { Account } from '@/lib/db/schema';
+} from '../lib/ingest/upsert';
+import type { ScrapedPost } from '../lib/providers/scraper/types';
 
-beforeAll(() => useTempDb());
-afterAll(() => dropTempDb());
+const samplePost = (overrides: Partial<ScrapedPost> = {}): ScrapedPost => ({
+  shortcode: 'SAMPLE001',
+  type: 'reel',
+  caption: 'A hook line\n\nBody',
+  takenAt: 1_700_000_000,
+  likes: 100,
+  comments: 10,
+  views: 1000,
+  plays: 1100,
+  durationS: 20,
+  carouselCount: null,
+  thumbnailUrl: null,
+  mediaUrls: [],
+  isSponsored: false,
+  raw: { synthetic: true },
+  ...overrides,
+});
 
-describe('actor payload normalisation', () => {
-  it('reads whichever field name the actor happens to use', () => {
-    const camel = normalizePost({ shortCode: 'A1', likesCount: 10, commentsCount: 2 });
-    const snake = normalizePost({ shortcode: 'A2', like_count: 10, comment_count: 2 });
-    expect(camel?.likes).toBe(10);
-    expect(snake?.likes).toBe(10);
-    expect(snake?.comments).toBe(2);
+afterEach(async () => {
+  await db().delete(jobs);
+  await db().delete(posts);
+  await db().delete(accounts);
+});
+
+afterAll(async () => {
+  await closeDb();
+});
+
+describe('upsertAccount', () => {
+  it('normalizes the handle and is idempotent on re-insert', async () => {
+    const first = await upsertAccount({ handle: '@TestUser', role: 'self' });
+    expect(first.handle).toBe('testuser');
+
+    const second = await upsertAccount({ handle: 'testuser', role: 'self' });
+    expect(second.id).toBe(first.id);
+
+    const rows = await db().select().from(accounts);
+    expect(rows).toHaveLength(1);
   });
 
-  it('accepts timestamps in seconds, milliseconds or ISO', () => {
-    expect(normalizePost({ shortcode: 'A', timestamp: 1700000000 })?.takenAt).toBe(1700000000);
-    expect(normalizePost({ shortcode: 'B', timestamp: 1700000000000 })?.takenAt).toBe(1700000000);
-    expect(normalizePost({ shortcode: 'C', timestamp: '2023-11-14T22:13:20Z' })?.takenAt).toBe(
-      1700000000,
-    );
-  });
-
-  it('classifies post types across actor vocabularies', () => {
-    expect(normalizePostType({ type: 'Sidecar' })).toBe('carousel');
-    expect(normalizePostType({ productType: 'clips' })).toBe('reel');
-    expect(normalizePostType({ __typename: 'GraphImage' })).toBe('image');
-    expect(normalizePostType({ childPosts: [{}, {}] })).toBe('carousel');
-    expect(normalizePostType({ isVideo: true, videoDuration: 30 })).toBe('reel');
-    expect(normalizePostType({ isVideo: true, videoDuration: 600 })).toBe('video');
-    expect(normalizePostType({})).toBe('unknown');
-  });
-
-  it('keeps the untouched payload so re-normalising never costs a scrape', () => {
-    const raw = { shortcode: 'A', somethingNew: { nested: true } };
-    expect(normalizePost(raw)?.raw).toEqual(raw);
-  });
-
-  it('drops rows with no shortcode rather than inventing one', () => {
-    expect(normalizePost({ likesCount: 4 })).toBeNull();
-  });
-
-  it('handles both flat post lists and profile-with-nested-posts', () => {
-    const flat = normalizeDataset([{ shortcode: 'A' }, { shortcode: 'B' }], 'me');
-    expect(flat.posts).toHaveLength(2);
-
-    const nested = normalizeDataset(
-      [{ username: 'me', followersCount: 900, latestPosts: [{ shortcode: 'C' }] }],
-      'me',
-    );
-    expect(nested.posts).toHaveLength(1);
-    expect(nested.profile?.followers).toBe(900);
+  it('finds the self account among competitors', async () => {
+    await upsertAccount({ handle: 'competitor1', role: 'competitor' });
+    await upsertAccount({ handle: 'me', role: 'self' });
+    const self = await selfAccount();
+    expect(self?.handle).toBe('me');
   });
 });
 
-describe('credit budgeting', () => {
-  it('quotes a price before anything is scraped', () => {
-    const estimate = estimateCost(100, 5);
-    expect(estimate.items).toBe(100);
-    expect(estimate.costUsd).toBeGreaterThan(0);
-    expect(estimate.affordable).toBe(true);
+describe('upsertPosts', () => {
+  it('inserts new posts and reports the count', async () => {
+    const account = await upsertAccount({ handle: 'creator', role: 'self' });
+    const summary = await upsertPosts(account.id, [
+      samplePost({ shortcode: 'A1' }),
+      samplePost({ shortcode: 'A2' }),
+    ]);
+    expect(summary).toEqual({ inserted: 2, updated: 0, total: 2 });
+
+    const stored = await db().select().from(posts).where(eq(posts.accountId, account.id));
+    expect(stored).toHaveLength(2);
   });
 
-  it('refuses a scan the month cannot pay for', () => {
-    const estimate = estimateCost(100_000, 5);
-    expect(estimate.affordable).toBe(false);
-    expect(estimate.note).toMatch(/only \$5\.00 is left/);
+  it('is idempotent on shortcode: a re-scan updates metrics without duplicating rows', async () => {
+    const account = await upsertAccount({ handle: 'creator2', role: 'self' });
+    await upsertPosts(account.id, [samplePost({ shortcode: 'B1', likes: 100 })]);
+    const summary = await upsertPosts(account.id, [samplePost({ shortcode: 'B1', likes: 250 })]);
+
+    expect(summary).toEqual({ inserted: 0, updated: 1, total: 1 });
+
+    const stored = await db().select().from(posts).where(eq(posts.accountId, account.id));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.likes).toBe(250);
   });
 
-  it('subtracts what has already been spent this month', () => {
-    recordRun({
-      provider: 'apify',
-      operation: 'scrape',
-      status: 'ok',
-      costEstimate: 4.9,
-      meta: { items: 2000 },
-    });
-    const estimate = estimateCost(500, 5);
-    expect(estimate.affordable).toBe(false);
+  it('preserves firstSeenAt across a re-scan while refreshing lastSeenAt', async () => {
+    const account = await upsertAccount({ handle: 'creator3', role: 'self' });
+    await upsertPosts(account.id, [samplePost({ shortcode: 'C1' })]);
+    const [before] = await db().select().from(posts).where(eq(posts.shortcode, 'C1'));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await upsertPosts(account.id, [samplePost({ shortcode: 'C1', likes: 999 })]);
+    const [after] = await db().select().from(posts).where(eq(posts.shortcode, 'C1'));
+
+    expect(after?.firstSeenAt?.getTime()).toBe(before?.firstSeenAt?.getTime());
+    expect(after?.lastSeenAt?.getTime()).toBeGreaterThanOrEqual(before?.lastSeenAt?.getTime() ?? 0);
   });
 });
 
-describe('upsert', () => {
-  let account: Account;
-
-  it('creates an account, normalising the handle', () => {
-    account = upsertAccount({ handle: '@Someone', role: 'self' });
-    expect(account.handle).toBe('someone');
-    expect(listAccounts('self')).toHaveLength(1);
+describe('knownShortcodes', () => {
+  it('returns the shortcodes already held for an account, newest first', async () => {
+    const account = await upsertAccount({ handle: 'creator4', role: 'self' });
+    await upsertPosts(account.id, [
+      samplePost({ shortcode: 'D1', takenAt: 1_700_000_000 }),
+      samplePost({ shortcode: 'D2', takenAt: 1_700_100_000 }),
+    ]);
+    const known = await knownShortcodes(account.id);
+    expect(known).toEqual(new Set(['D1', 'D2']));
   });
 
-  it('is idempotent on shortcode and never loses first-seen history', async () => {
-    const scraper = new FakeScraper();
-    const first = await scraper.scrape({ handle: 'someone', limit: 20 });
-
-    const a = upsertPosts(account.id, first.posts);
-    expect(a.inserted).toBe(20);
-
-    const b = upsertPosts(account.id, first.posts);
-    expect(b.inserted).toBe(0);
-    expect(b.updated).toBe(20);
+  it('is empty for an account with no posts', async () => {
+    const account = await upsertAccount({ handle: 'creator5', role: 'self' });
+    expect(await knownShortcodes(account.id)).toEqual(new Set());
   });
+});
 
-  it('refreshes metrics on re-scan', async () => {
-    const scraper = new FakeScraper();
-    const result = await scraper.scrape({ handle: 'someone', limit: 5 });
-    const bumped = result.posts.map((p) => ({ ...p, likes: 99_999 }));
-    upsertPosts(account.id, bumped);
-
-    const { db } = await import('@/lib/db/client');
-    const { posts } = await import('@/lib/db/schema');
-    const { eq } = await import('drizzle-orm');
-    const row = db().select().from(posts).where(eq(posts.shortcode, bumped[0]!.shortcode)).get();
-    expect(row?.likes).toBe(99_999);
-  });
-
-  it('offers the known shortcodes that make an incremental scan cheap', () => {
-    const known = knownShortcodes(account.id);
-    expect(known.size).toBeGreaterThan(0);
-  });
-
-  it('stops a scrape at the first already-known post', async () => {
-    const scraper = new FakeScraper();
-    const known = knownShortcodes(account.id);
-    const result = await scraper.scrape({ handle: 'someone', limit: 20, stopAtShortcodes: known });
-    expect(result.posts).toHaveLength(0);
-  });
-
-  it('gives different handles different shortcodes', async () => {
-    const scraper = new FakeScraper();
-    const one = await scraper.scrape({ handle: 'niche_one', limit: 5 });
-    const two = await scraper.scrape({ handle: 'niche_two', limit: 5 });
-    const overlap = one.posts.filter((p) => two.posts.some((q) => q.shortcode === p.shortcode));
-    expect(overlap).toHaveLength(0);
-  });
-
-  it('respects the scan cooldown', () => {
-    const nowS = Math.floor(Date.now() / 1000);
-    expect(isScanDue({ ...account, lastScrapedAt: null }, 7)).toBe(true);
-    expect(isScanDue({ ...account, lastScrapedAt: nowS - 86400 }, 7)).toBe(false);
-    expect(isScanDue({ ...account, lastScrapedAt: nowS - 8 * 86400 }, 7)).toBe(true);
+describe('markScanned / getAccount', () => {
+  it('stamps lastScrapedAt', async () => {
+    const account = await upsertAccount({ handle: 'creator6', role: 'self' });
+    expect(account.lastScrapedAt).toBeNull();
+    await markScanned(account.id);
+    const refreshed = await getAccount(account.id);
+    expect(refreshed?.lastScrapedAt).toBeInstanceOf(Date);
   });
 });

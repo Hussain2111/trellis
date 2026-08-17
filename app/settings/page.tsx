@@ -1,220 +1,147 @@
-import { providerStatuses } from '@/lib/providers';
+import { desc, eq } from 'drizzle-orm';
+import { db } from '@/lib/db/client';
+import { runs } from '@/lib/db/schema';
+import { env } from '@/lib/env';
 import { monthlyCostSummary, recentRuns } from '@/lib/runs/log';
-import { getSettings } from '@/lib/settings';
-import { SmokeTest } from '@/components/smoke-test';
-import {
-  Badge,
-  Button,
-  Field,
-  Input,
-  Panel,
-  PanelHeader,
-  Select,
-  Stat,
-} from '@/components/ui/primitives';
-import { formatRelative, formatUsd } from '@/lib/utils';
-import { acknowledgePrivacyAction, saveSettingsAction } from '../actions';
+import { Badge, Panel, PanelHeader, Stat } from '@/components/ui/primitives';
+import { Table } from '@/components/ui/data';
+import { formatUsd } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SettingsPage(): Promise<React.JSX.Element> {
-  const settings = getSettings();
-  const providers = await providerStatuses();
-  const cost = monthlyCostSummary();
-  const runs = recentRuns(12);
+  const e = env();
+  const cost = await monthlyCostSummary();
+  const runList = await recentRuns(30);
+  const [tokenCheck] = await db()
+    .select()
+    .from(runs)
+    .where(eq(runs.operation, 'token_check'))
+    .orderBy(desc(runs.id))
+    .limit(1);
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
-      <h1 className="mb-6 text-[20px] font-semibold">Settings</h1>
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <header className="mb-5">
+        <h1 className="text-[20px] leading-tight font-semibold">Settings</h1>
+        <p className="mt-1 text-[13px] text-ink-muted">
+          Provider configuration and the $0.00 cost check.
+        </p>
+      </header>
 
-      {settings.privacyNoticeAcknowledgedAt === null ? (
-        <Panel className="mb-4 border-signal/30 bg-signal/[0.05]">
-          <div className="px-5 py-4">
-            <div className="label text-signal/70">Before anything is sent to Google</div>
-            <p className="mt-2 text-[13px] leading-relaxed text-ink-muted">
-              Tier A runs on Google AI Studio&apos;s free tier, and free-tier terms permit Google to
-              use prompts to improve their products. Your captions are already public, so that is
-              probably fine for analysis. Your <strong className="text-ink">voice profile</strong>{' '}
-              and <strong className="text-ink">chat history</strong> are a different matter — those
-              are yours and not public. The switch below keeps both on the local tier, at the cost
-              of noticeably worse writing.
-            </p>
-            <form action={acknowledgePrivacyAction} className="mt-3">
-              <Button size="sm" variant="primary" type="submit">
-                Understood
-              </Button>
-            </form>
-          </div>
-        </Panel>
-      ) : null}
-
-      <form action={saveSettingsAction} className="grid gap-4">
-        <Panel>
-          <PanelHeader title="Account" />
-          <div className="grid gap-4 px-4 py-4 sm:grid-cols-2">
-            <Field label="Instagram handle" hint="Without the @.">
-              <Input name="handle" defaultValue={settings.handle} placeholder="yourhandle" />
-            </Field>
-            <Field label="Posting cadence" hint="Posts per week; sets the draft batch size.">
-              <Input name="postsPerWeek" type="number" min={0} defaultValue={settings.postsPerWeek} />
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Niche" hint="One sentence. It anchors every benchmark I make.">
-                <Input
-                  name="niche"
-                  defaultValue={settings.niche}
-                  placeholder="Landscape photography tutorials for beginners"
-                />
-              </Field>
-            </div>
-          </div>
-        </Panel>
-
-        <Panel>
-          <PanelHeader title="Analysis" />
-          <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
-            <Field label="Scan cooldown (days)" hint="Per account. Scraping costs credits.">
-              <Input
-                name="scanCooldownDays"
-                type="number"
-                min={1}
-                defaultValue={settings.scanCooldownDays}
-              />
-            </Field>
-            <Field label="Analysis window (days)">
-              <Input
-                name="analysisWindowDays"
-                type="number"
-                min={7}
-                defaultValue={settings.analysisWindowDays}
-              />
-            </Field>
-            <Field label="Publishing mode" hint="Mode B needs docs/instagram-setup.md first.">
-              <Select name="publishingMode" defaultValue={settings.publishingMode}>
-                <option value="manual">manual — notify me, I post</option>
-                <option value="api">api — publish via Graph API</option>
-              </Select>
-            </Field>
-          </div>
-        </Panel>
-
+      <div className="mb-4 grid gap-4 lg:grid-cols-2">
         <Panel>
           <PanelHeader
-            title="Models"
+            title="Cost this month"
             aside={
-              <div className="flex gap-2">
-                <SmokeTest tier="A" label="test tier A" />
-                <SmokeTest tier="B" label="test tier B" />
-              </div>
+              <Badge tone={cost.paidCallCount === 0 ? 'good' : 'bad'}>
+                {cost.paidCallCount === 0 ? '$0/month' : 'paid calls detected'}
+              </Badge>
             }
           />
-          <div className="grid gap-4 px-4 py-4 sm:grid-cols-2">
-            <Field
-              label="Local model (tier B)"
-              hint="Set by npm run bench:llm. Blank means Tier B is unavailable."
-            >
-              <Input
-                name="ollamaModel"
-                defaultValue={settings.ollamaModel || (process.env.OLLAMA_MODEL ?? '')}
-                placeholder="qwen3:4b"
-              />
-            </Field>
-            <label className="flex items-start gap-2.5 pt-6">
-              <input
-                type="checkbox"
-                name="localOnlyVoiceAndChat"
-                defaultChecked={settings.localOnlyVoiceAndChat}
-                className="mt-0.5 accent-[var(--color-signal)]"
-              />
-              <span className="text-[13px]">
-                Keep voice profile and chat local-only
-                <span className="mt-0.5 block text-[12px] text-ink-faint">
-                  Never sends either to Google. Slower, and the writing will be worse.
-                </span>
-              </span>
-            </label>
+          <div className="grid grid-cols-3 divide-x divide-line">
+            <Stat label="Total" value={formatUsd(cost.monthToDateUsd)} />
+            <Stat label="Calls" value={cost.callCount} />
+            <Stat
+              label="Paid calls"
+              value={cost.paidCallCount}
+              tone={cost.paidCallCount === 0 ? 'good' : 'bad'}
+            />
           </div>
         </Panel>
 
-        <div className="flex justify-end">
-          <Button variant="primary" type="submit">
-            Save settings
-          </Button>
-        </div>
-      </form>
-
-      <Panel className="mt-6">
-        <PanelHeader
-          title="Cost"
-          aside={
-            <Badge tone={cost.monthToDateUsd === 0 ? 'good' : 'bad'}>
-              {formatUsd(cost.monthToDateUsd)} month to date
+        <Panel>
+          <PanelHeader title="Guards" />
+          <div className="grid grid-cols-2 gap-y-2 px-4 py-3 text-[12px]">
+            <span className="label">ALLOW_PAID_PROVIDERS</span>
+            <Badge tone={e.ALLOW_PAID_PROVIDERS ? 'bad' : 'good'}>
+              {String(e.ALLOW_PAID_PROVIDERS)}
             </Badge>
-          }
-        />
-        <div className="grid grid-cols-3 divide-x divide-line border-b border-line">
-          <Stat label="Calls" value={<span className="tabular">{cost.callCount}</span>} />
-          <Stat
-            label="Billable calls"
-            value={<span className="tabular">{cost.paidCallCount}</span>}
-            tone={cost.paidCallCount > 0 ? 'bad' : 'good'}
-          />
-          <Stat
-            label="Total"
-            value={formatUsd(cost.monthToDateUsd)}
-            tone={cost.monthToDateUsd === 0 ? 'good' : 'bad'}
-            sub="should read $0.00"
-          />
-        </div>
-        <ul className="divide-y divide-line">
-          {providers.map((p) => (
-            <li key={`${p.kind}-${p.id}`} className="flex items-center gap-3 px-4 py-2">
-              <span className="font-mono text-[12px]">{p.id}</span>
-              <span className="text-[12px] text-ink-faint">{p.costNote}</span>
-              <span className="ml-auto">
-                {p.costsMoney ? <Badge tone="bad">billable</Badge> : <Badge tone="good">free</Badge>}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </Panel>
+            <span className="label">ENABLE_IG_PUBLISHING</span>
+            <Badge tone={e.ENABLE_IG_PUBLISHING ? 'signal' : 'neutral'}>
+              {String(e.ENABLE_IG_PUBLISHING)}
+            </Badge>
+            <span className="label">SCRAPE_MODE</span>
+            <Badge tone={e.SCRAPE_MODE === 'live' ? 'signal' : 'neutral'}>{e.SCRAPE_MODE}</Badge>
+            <span className="label">IMAGE_PROVIDER</span>
+            <Badge tone="neutral">{e.IMAGE_PROVIDER}</Badge>
+          </div>
+        </Panel>
+      </div>
 
-      <Panel className="mt-4">
-        <PanelHeader title="Recent external calls" />
-        {runs.length === 0 ? (
-          <p className="px-4 py-6 text-center text-[12px] text-ink-faint">
-            Nothing has left this machine yet.
-          </p>
+      <div className="mb-4 grid gap-4 lg:grid-cols-2">
+        <Panel>
+          <PanelHeader title="Providers" />
+          <div className="grid grid-cols-2 gap-y-2 px-4 py-3 text-[12px]">
+            <span className="label">LLM</span>
+            <span className="font-mono">
+              {e.LLM_PROVIDER}:{e.GOOGLE_MODEL}
+            </span>
+            <span className="label">Scraper</span>
+            <span className="font-mono">apify ({e.APIFY_ACTOR})</span>
+            <span className="label">Images</span>
+            <span className="font-mono">{e.IMAGE_PROVIDER}</span>
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Instagram publishing" />
+          <div className="px-4 py-3 text-[12px]">
+            {!e.ENABLE_IG_PUBLISHING ? (
+              <p className="text-ink-muted">
+                Disabled. Scheduled drafts wait for you to post them by hand — see{' '}
+                <span className="font-mono">docs/instagram-setup.md</span>.
+              </p>
+            ) : tokenCheck ? (
+              <div className="flex items-center gap-2">
+                <Badge tone={tokenCheck.status === 'ok' ? 'good' : 'bad'}>
+                  {tokenCheck.status}
+                </Badge>
+                <span className="text-ink-muted">
+                  {tokenCheck.error ?? `checked ${new Date(tokenCheck.createdAt).toLocaleString()}`}
+                </span>
+              </div>
+            ) : (
+              <p className="text-ink-faint">No token check has run yet.</p>
+            )}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel>
+        <PanelHeader title="Recent provider calls" />
+        {runList.length === 0 ? (
+          <div className="px-4 py-8 text-center text-[13px] text-ink-muted">
+            No calls logged yet.
+          </div>
         ) : (
-          <table className="w-full text-[12px]">
-            <thead>
-              <tr className="border-b border-line text-left">
-                {['when', 'provider', 'operation', 'tier', 'ms', 'status'].map((h) => (
-                  <th key={h} className="label px-4 py-1.5 font-normal">
-                    {h}
-                  </th>
-                ))}
+          <Table head={['When', 'Provider', 'Operation', 'Status', 'Cost']}>
+            {runList.map((run) => (
+              <tr key={run.id}>
+                <td className="px-4 py-2 whitespace-nowrap text-ink-muted">
+                  {new Date(run.createdAt).toLocaleString()}
+                </td>
+                <td className="px-4 py-2 font-mono">{run.provider}</td>
+                <td className="px-4 py-2">{run.operation}</td>
+                <td className="px-4 py-2">
+                  <Badge
+                    tone={
+                      run.status === 'ok'
+                        ? 'good'
+                        : run.status === 'error'
+                          ? 'bad'
+                          : run.status === 'quota'
+                            ? 'signal'
+                            : 'neutral'
+                    }
+                  >
+                    {run.status}
+                  </Badge>
+                </td>
+                <td className="metric px-4 py-2">{formatUsd(run.costEstimate ?? 0)}</td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {runs.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-4 py-1.5 text-ink-faint">{formatRelative(r.createdAt)}</td>
-                  <td className="px-4 py-1.5 font-mono">{r.provider}</td>
-                  <td className="px-4 py-1.5">{r.operation}</td>
-                  <td className="px-4 py-1.5 font-mono">{r.tier}</td>
-                  <td className="px-4 py-1.5 tabular">{r.durationMs ?? '—'}</td>
-                  <td className="px-4 py-1.5">
-                    <Badge
-                      tone={r.status === 'ok' ? 'good' : r.status === 'quota' ? 'signal' : 'bad'}
-                    >
-                      {r.status}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            ))}
+          </Table>
         )}
       </Panel>
     </div>

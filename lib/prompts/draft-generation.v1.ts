@@ -1,14 +1,13 @@
 import { z } from 'zod';
-import type { Prompt } from './index';
 
-/**
- * Drafts are generated 3-4 at a time rather than 12-in-one: smaller outputs
- * fail schema validation far less often, and every retry costs quota.
- */
+/** Drafts are generated a few at a time rather than 12-in-one: smaller outputs fail schema validation far less often, and every retry costs quota. */
 
 const carouselBody = z.object({
   kind: z.literal('carousel'),
-  slides: z.array(z.object({ heading: z.string().max(80), body: z.string().max(300) })).min(3).max(10),
+  slides: z
+    .array(z.object({ heading: z.string().max(80), body: z.string().max(300) }))
+    .min(3)
+    .max(10),
 });
 
 const reelBody = z.object({
@@ -51,16 +50,16 @@ export const draftBatchSchema = z.object({ drafts: z.array(draftSchema).min(1).m
 export type DraftOutput = z.infer<typeof draftSchema>;
 export type DraftBatch = z.infer<typeof draftBatchSchema>;
 
-export interface DraftVars {
+export interface DraftPromptInput {
   voice: string;
   niche: string;
-  gap: string;
-  patterns: { index: number; claim: string; niche_stat: string; my_stat: string }[];
+  gapClaim: string;
+  patterns: { index: number; claim: string; nicheStat: string; myStat: string }[];
   formats: ('carousel' | 'reel' | 'image')[];
   avoidTitles: string[];
 }
 
-const SYSTEM = `You write Instagram content in someone else's voice, aimed at closing one specific gap.
+export const DRAFT_GENERATION_SYSTEM = `You write Instagram content in someone else's voice, aimed at closing one specific gap.
 
 Rules:
 - The VOICE block is binding. Match it. If it bans a word, the word does not appear.
@@ -72,60 +71,31 @@ Rules:
 - Hashtags: only ones that fit the niche. Fewer and specific beats many and generic.
 - JSON only.`;
 
-export const draftGeneration: Prompt<DraftVars, DraftBatch> = {
-  id: 'draft-generation',
-  version: 1,
-  tier: 'A',
-  system: SYSTEM,
-  schema: draftBatchSchema,
-  render: (vars) =>
-    [
-      vars.voice,
-      '',
-      `NICHE: ${vars.niche || 'unspecified'}`,
-      '',
-      `THE GAP TO CLOSE: ${vars.gap}`,
-      '',
-      'PATTERNS (use pattern_index to say which one a draft serves):',
-      ...vars.patterns.map((p) => `  ${p.index}: ${p.claim} (niche ${p.niche_stat}, you ${p.my_stat})`),
-      '',
-      vars.avoidTitles.length
-        ? `ALREADY DRAFTED — do not repeat these angles:\n${vars.avoidTitles.map((t) => `  - ${t}`).join('\n')}\n`
-        : '',
-      `Write ${vars.formats.length} drafts, in these formats, in order: ${vars.formats.join(', ')}.`,
-      '',
-      'Return {"drafts":[{"format":"carousel|reel|image","title":"...","hook":"...","body":{...},"caption":"...","hashtags":[...],"cta":"...","rationale":"...","evidence":[post_id,...],"pattern_index":N}]}',
-      '',
-      'body shapes:',
-      '  carousel: {"kind":"carousel","slides":[{"heading":"...","body":"..."}]}',
-      '  reel:     {"kind":"reel","hook_line":"...","beats":[{"shot":"...","on_screen_text":"...","spoken":"..."}]}',
-      '  image:    {"kind":"image","concept":"...","image_direction":"..."}',
-    ]
-      .filter(Boolean)
-      .join('\n'),
-};
-
-/** "Make it more ___", holding the voice profile fixed. */
-export const draftRewrite: Prompt<
-  { voice: string; instruction: string; draft: string },
-  DraftOutput
-> = {
-  id: 'draft-rewrite',
-  version: 1,
-  tier: 'A',
-  system:
-    SYSTEM +
-    '\n\nYou are revising ONE existing draft. Keep its format, its pattern_index and its evidence. Change only what the instruction asks for. The VOICE block still binds — "make it punchier" never means "abandon the voice".',
-  schema: draftSchema,
-  render: (vars) =>
-    [
-      vars.voice,
-      '',
-      `INSTRUCTION: ${vars.instruction}`,
-      '',
-      'CURRENT DRAFT:',
-      vars.draft,
-      '',
-      'Return the full revised draft as a single JSON object with the same shape.',
-    ].join('\n'),
-};
+export function buildDraftGenerationPrompt(input: DraftPromptInput): string {
+  return [
+    input.voice,
+    '',
+    `NICHE: ${input.niche || 'unspecified'}`,
+    '',
+    `THE GAP TO CLOSE: ${input.gapClaim}`,
+    '',
+    'PATTERNS (use pattern_index to say which one a draft serves):',
+    ...input.patterns.map(
+      (p) => `  ${p.index}: ${p.claim} (niche ${p.nicheStat}, you ${p.myStat})`,
+    ),
+    '',
+    input.avoidTitles.length
+      ? `ALREADY DRAFTED — do not repeat these angles:\n${input.avoidTitles.map((t) => `  - ${t}`).join('\n')}\n`
+      : '',
+    `Write ${input.formats.length} drafts, in these formats, in order: ${input.formats.join(', ')}.`,
+    '',
+    'Return {"drafts":[{"format":"carousel|reel|image","title":"...","hook":"...","body":{...},"caption":"...","hashtags":[...],"cta":"...","rationale":"...","evidence":[post_id,...],"pattern_index":N}]}',
+    '',
+    'body shapes:',
+    '  carousel: {"kind":"carousel","slides":[{"heading":"...","body":"..."}]}',
+    '  reel:     {"kind":"reel","hook_line":"...","beats":[{"shot":"...","on_screen_text":"...","spoken":"..."}]}',
+    '  image:    {"kind":"image","concept":"...","image_direction":"..."}',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}

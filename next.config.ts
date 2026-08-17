@@ -1,10 +1,11 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // Native modules, which must never be bundled.
-  serverExternalPackages: ['better-sqlite3', '@resvg/resvg-js', 'node-notifier'],
+  // Native module — must never be bundled.
+  serverExternalPackages: ['@resvg/resvg-js'],
   typescript: { ignoreBuildErrors: false },
-  // Local-first: nothing calls out to an image optimisation service.
+  // No Instagram OAuth, no external image host — served via Supabase Storage
+  // public URLs, which don't need Next's optimizer.
   images: { unoptimized: true },
 };
 

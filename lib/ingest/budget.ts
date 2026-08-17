@@ -1,4 +1,4 @@
-import { and, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { runs } from '../db/schema';
 
@@ -24,16 +24,15 @@ export interface BudgetState {
   estimatedItemsRemaining: number;
 }
 
-export function budgetState(monthlyAllowanceUsd: number): BudgetState {
-  const start = startOfMonthSeconds();
-  const row = db()
+export async function budgetState(monthlyAllowanceUsd: number): Promise<BudgetState> {
+  const start = startOfMonth();
+  const [row] = await db()
     .select({
-      spent: sql<number>`coalesce(sum(${runs.costEstimate}), 0)`,
-      items: sql<number>`coalesce(sum(json_extract(${runs.meta}, '$.items')), 0)`,
+      spent: sql<number>`coalesce(sum(${runs.costEstimate}), 0)::float`,
+      items: sql<number>`coalesce(sum((${runs.meta}->>'items')::numeric), 0)::float`,
     })
     .from(runs)
-    .where(and(gte(runs.createdAt, start), sql`${runs.provider} = 'apify'`))
-    .get();
+    .where(and(gte(runs.createdAt, start), eq(runs.provider, 'apify')));
 
   const spentUsd = Number(row?.spent ?? 0);
   const itemsScraped = Number(row?.items ?? 0);
@@ -56,14 +55,17 @@ export function budgetState(monthlyAllowanceUsd: number): BudgetState {
   };
 }
 
-export function estimateCost(items: number, monthlyAllowanceUsd: number): {
+export async function estimateCost(
+  items: number,
+  monthlyAllowanceUsd: number,
+): Promise<{
   items: number;
   costUsd: number;
   remainingAfterUsd: number;
   affordable: boolean;
   note: string;
-} {
-  const state = budgetState(monthlyAllowanceUsd);
+}> {
+  const state = await budgetState(monthlyAllowanceUsd);
   const costUsd = items * state.usdPerItem;
   const remainingAfterUsd = state.remainingUsd - costUsd;
   const affordable = remainingAfterUsd >= 0;
@@ -88,7 +90,7 @@ export class BudgetExceeded extends Error {
   }
 }
 
-function startOfMonthSeconds(): number {
+function startOfMonth(): Date {
   const d = new Date();
-  return Math.floor(new Date(d.getFullYear(), d.getMonth(), 1).getTime() / 1000);
+  return new Date(d.getFullYear(), d.getMonth(), 1);
 }

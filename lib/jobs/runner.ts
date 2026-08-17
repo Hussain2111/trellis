@@ -10,87 +10,81 @@ import {
   requeue,
   saveProgress,
 } from './queue';
-import { JobPermanentError, JobYield, parsePayload, type JobContext, type JobType } from './types';
+import {
+  JobPermanentError,
+  JobWaiting,
+  JobYield,
+  parsePayload,
+  type JobContext,
+  type JobType,
+} from './types';
+
+export interface TickResult {
+  processed: number;
+  reaped: number;
+}
 
 /**
- * Single-concurrency runner. One job at a time is deliberate: on a 15W U-series
- * chip, two concurrent model calls are slower than two sequential ones, and a
- * transcription queue running beside a scan will make the UI stutter.
+ * Run runnable jobs until the queue is empty or `budgetMs` is nearly spent.
+ * Vercel Hobby functions have a hard wall-clock ceiling, so this never blocks
+ * indefinitely like a persistent worker would — a cron tick (or a webhook
+ * callback) calls this once and returns, and the next tick picks up where
+ * this one left off via the job's `checkpoint`.
  */
-export class JobRunner {
-  private stopping = false;
-  private controller = new AbortController();
-  private current: Job | null = null;
+export async function runTick(types?: JobType[], budgetMs = 8_000): Promise<TickResult> {
+  const startedAt = Date.now();
+  const reaped = await reapStaleClaims();
+  let processed = 0;
 
-  stop(): void {
-    this.stopping = true;
-    this.controller.abort();
+  while (Date.now() - startedAt < budgetMs) {
+    const job = await claimNext(types);
+    if (!job) break;
+    const remaining = budgetMs - (Date.now() - startedAt);
+    await runOne(job, startedAt + budgetMs, remaining);
+    processed++;
   }
 
-  get busy(): boolean {
-    return this.current !== null;
+  return { processed, reaped };
+}
+
+async function runOne(job: Job, deadline: number, remainingMs: number): Promise<void> {
+  const handler = getHandler(job.type as JobType);
+  if (!handler) {
+    await fail(
+      job,
+      new JobPermanentError(`no handler registered for job type "${job.type}"`),
+      true,
+    );
+    return;
   }
 
-  /** Run every runnable job until the queue is empty or a stop is requested. */
-  async drain(types?: JobType[]): Promise<number> {
-    reapStaleClaims();
-    let processed = 0;
-    while (!this.stopping) {
-      const job = claimNext(types);
-      if (!job) break;
-      await this.run(job);
-      processed++;
-    }
-    return processed;
-  }
-
-  private async run(job: Job): Promise<void> {
-    this.current = job;
-    const handler = getHandler(job.type);
-    if (!handler) {
-      fail(job, new JobPermanentError(`no handler registered for job type "${job.type}"`), true);
-      this.current = null;
-      return;
-    }
-
-    const beat = setInterval(() => heartbeat(job.id), 15_000);
-    let yielded = false;
-
-    try {
-      markRunning(job.id);
-      const payload = parsePayload(job.type as JobType, job.payload);
-      const ctx: JobContext = {
-        jobId: job.id,
-        type: job.type as JobType,
-        payload,
-        checkpoint: job.checkpoint,
-        attempt: job.attempts,
-        save: (update) => saveProgress(job.id, update),
-        shouldStop: () => this.stopping,
-        signal: this.controller.signal,
-      };
-      await handler(ctx);
-
-      if (this.stopping) {
-        // The handler checkpointed on the way out; put it back for next start.
-        requeue(job.id);
-        yielded = true;
-      } else {
-        complete(job.id);
-      }
-    } catch (error) {
-      if (error instanceof JobYield) {
-        requeue(job.id, 5);
-        yielded = true;
-      } else if (error instanceof JobPermanentError) {
-        fail(job, error, true);
-      } else {
-        fail(job, error);
-      }
-    } finally {
-      clearInterval(beat);
-      this.current = null;
-      void yielded;
+  try {
+    await markRunning(job.id);
+    const payload = parsePayload(job.type as JobType, job.payload);
+    const ctx: JobContext = {
+      jobId: job.id,
+      type: job.type as JobType,
+      payload,
+      checkpoint: job.checkpoint,
+      attempt: job.attempts,
+      save: (update) => saveProgress(job.id, update),
+      deadline,
+      timeRemainingMs: () => deadline - Date.now(),
+    };
+    void remainingMs;
+    await heartbeat(job.id);
+    await handler(ctx);
+    await complete(job.id);
+  } catch (error) {
+    if (error instanceof JobWaiting) {
+      // The handler already moved the job to `waiting` via markWaiting() —
+      // nothing more to do here. A webhook (or a future poll) resumes it.
+    } else if (error instanceof JobYield) {
+      await requeue(job.id, error.delaySeconds);
+    } else if (error instanceof JobPermanentError) {
+      await fail(job, error, true);
+    } else {
+      await fail(job, error);
     }
   }
 }

@@ -9,75 +9,38 @@ import {
 } from '../../quota/budget';
 import { recordRun } from '../../runs/log';
 import { GoogleLlm } from './google';
-import { OllamaEmbeddings, OllamaLlm } from './ollama';
-import { FakeEmbeddings, FakeLlm } from './fake';
-import { estimateRequestTokens } from './tokens';
+import { FakeLlm } from './fake';
 import {
   QuotaExhausted,
-  TierBPromptTooLarge,
   type CompleteRequest,
   type CompleteResult,
-  type EmbeddingProvider,
   type LlmProvider,
-  type Tier,
 } from './types';
 
 export * from './types';
-export { estimateTokens } from './tokens';
-export { FakeEmbeddings, FakeLlm } from './fake';
+export { FakeLlm } from './fake';
 
-let tierA: LlmProvider | null = null;
-let tierB: LlmProvider | null = null;
-let embedder: EmbeddingProvider | null = null;
+let provider: LlmProvider | null = null;
 
-/** Test seam: swap in fakes without touching the environment. */
-export function __setProvidersForTests(providers: {
-  tierA?: LlmProvider | null;
-  tierB?: LlmProvider | null;
-  embedder?: EmbeddingProvider | null;
-}): void {
-  if ('tierA' in providers) tierA = providers.tierA ?? null;
-  if ('tierB' in providers) tierB = providers.tierB ?? null;
-  if ('embedder' in providers) embedder = providers.embedder ?? null;
+/** Test seam: swap in a fake without touching the environment. */
+export function __setLlmForTests(value: LlmProvider | null): void {
+  provider = value;
 }
 
-export function getTierA(): LlmProvider {
-  if (tierA) return tierA;
+export function getLlm(): LlmProvider {
+  if (provider) return provider;
   const e = env();
-  tierA =
-    e.LLM_TIER_A === 'fake'
-      ? new FakeLlm({ tier: 'A' })
+  provider =
+    e.LLM_PROVIDER === 'fake'
+      ? new FakeLlm()
       : new GoogleLlm({ apiKey: e.GOOGLE_GENERATIVE_AI_API_KEY ?? '', model: e.GOOGLE_MODEL });
-  return tierA;
-}
-
-export function getTierB(): LlmProvider {
-  if (tierB) return tierB;
-  const e = env();
-  tierB =
-    e.LLM_TIER_B === 'fake'
-      ? new FakeLlm({ tier: 'B', model: 'fake-local' })
-      : new OllamaLlm({
-          baseURL: e.OLLAMA_BASE_URL,
-          model: e.OLLAMA_MODEL,
-          keepAlive: e.OLLAMA_KEEP_ALIVE,
-        });
-  return tierB;
-}
-
-export function getEmbedder(): EmbeddingProvider {
-  if (embedder) return embedder;
-  const e = env();
-  embedder =
-    e.LLM_TIER_B === 'fake'
-      ? new FakeEmbeddings()
-      : new OllamaEmbeddings({ baseURL: e.OLLAMA_BASE_URL, model: e.OLLAMA_EMBED_MODEL });
-  return embedder;
+  return provider;
 }
 
 function quotaJobType(operation: string): QuotaJobType {
   const known: QuotaJobType[] = [
-    'cluster_naming',
+    'niche_inference',
+    'hook_classification',
     'gap_analysis',
     'voice_profile',
     'draft_generation',
@@ -87,83 +50,35 @@ function quotaJobType(operation: string): QuotaJobType {
 }
 
 /**
- * The one entry point for generation. It resolves tier → provider → model,
- * enforces the Tier B prompt ceiling, spends quota, records to `runs`, and
- * falls back A → B when the day's Tier A allowance is gone.
+ * The one entry point for generation. Resolves the provider, checks the
+ * self-imposed daily budget for this job type, spends it, and records to
+ * `runs`. There is only one tier — Gemini free tier — so quota exhaustion is
+ * a hard stop (the caller's job should requeue for tomorrow), not a fallback.
  */
 export async function complete<T = string>(
   request: CompleteRequest<T>,
 ): Promise<CompleteResult<T>> {
-  if (request.tier === 'B') return runOn<T>(getTierB(), request, 'B', false);
-
-  const provider = getTierA();
-  const headroom = checkHeadroom(provider.id, quotaJobType(request.operation));
+  const llm = getLlm();
+  const headroom = await checkHeadroom(llm.id, quotaJobType(request.operation));
 
   if (!headroom.allowed) {
-    if (request.allowFallback === false) {
-      throw new QuotaExhausted('daily');
-    }
-    recordRun({
-      provider: provider.id,
-      model: provider.model,
+    await recordRun({
+      provider: llm.id,
+      model: llm.model,
       operation: request.operation,
-      tier: 'A',
       status: 'skipped',
       error: headroom.reason ?? 'no headroom',
     });
-    return runOn<T>(getTierB(), request, 'B', true);
-  }
-
-  try {
-    const result = await runOn<T>(provider, request, 'A', false);
-    consume(provider.id, quotaJobType(request.operation));
-    return result;
-  } catch (error) {
-    const quota = classifyQuotaError(error);
-    if (quota.kind === 'none') throw error;
-
-    if (quota.kind === 'daily') {
-      markDailyExhausted(
-        provider.id,
-        quota.retryAfterS ? Math.floor(Date.now() / 1000) + quota.retryAfterS : undefined,
-      );
-    }
-    if (request.allowFallback === false) {
-      throw new QuotaExhausted(quota.kind, quota.retryAfterS);
-    }
-    return runOn<T>(getTierB(), request, 'B', true);
-  }
-}
-
-async function runOn<T>(
-  provider: LlmProvider,
-  request: CompleteRequest<T>,
-  tier: Tier,
-  degraded: boolean,
-): Promise<CompleteResult<T>> {
-  if (tier === 'B') {
-    const ceiling = env().TIER_B_MAX_PROMPT_TOKENS;
-    const estimated = estimateRequestTokens([request.system, request.prompt]);
-    if (estimated > ceiling) {
-      recordRun({
-        provider: provider.id,
-        model: provider.model,
-        operation: request.operation,
-        tier: 'B',
-        status: 'skipped',
-        error: `prompt ~${estimated} tokens exceeds ceiling ${ceiling}`,
-      });
-      throw new TierBPromptTooLarge(estimated, ceiling, request.operation);
-    }
+    throw new QuotaExhausted('daily');
   }
 
   const started = Date.now();
-  const generatedBy = `${provider.id}:${provider.model}`;
+  const generatedBy = `${llm.id}:${llm.model}`;
 
   const attempt = async (
     req: CompleteRequest<unknown>,
   ): Promise<{ text: string; promptTokens?: number; completionTokens?: number }> =>
-    provider.complete(req);
+    llm.complete(req);
 
   try {
     let raw = await attempt(request as CompleteRequest<unknown>);
@@ -191,36 +106,44 @@ async function runOn<T>(
       value = raw.text as unknown as T;
     }
 
+    await consume(llm.id, quotaJobType(request.operation));
+
     const durationMs = Date.now() - started;
-    recordRun({
-      provider: provider.id,
-      model: provider.model,
+    await recordRun({
+      provider: llm.id,
+      model: llm.model,
       operation: request.operation,
-      tier,
       status: 'ok',
       costEstimate: 0,
       freeTier: true,
       promptTokens: raw.promptTokens ?? null,
       completionTokens: raw.completionTokens ?? null,
       durationMs,
-      meta: degraded ? { degraded: true } : null,
     });
 
-    const out: CompleteResult<T> = { value, generatedBy, tier, degraded, durationMs };
+    const out: CompleteResult<T> = { value, generatedBy, durationMs };
     if (raw.promptTokens !== undefined) out.promptTokens = raw.promptTokens;
     if (raw.completionTokens !== undefined) out.completionTokens = raw.completionTokens;
     return out;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    recordRun({
-      provider: provider.id,
-      model: provider.model,
+    const quota = classifyQuotaError(error);
+
+    await recordRun({
+      provider: llm.id,
+      model: llm.model,
       operation: request.operation,
-      tier,
-      status: classifyQuotaError(error).kind === 'none' ? 'error' : 'quota',
+      status: quota.kind === 'none' ? 'error' : 'quota',
       durationMs: Date.now() - started,
       error: message,
     });
+
+    if (quota.kind === 'daily') {
+      await markDailyExhausted(
+        llm.id,
+        quota.retryAfterS ? new Date(Date.now() + quota.retryAfterS * 1000) : undefined,
+      );
+    }
     throw error;
   }
 }
@@ -290,39 +213,3 @@ function repairPrompt(original: string, badOutput: string, error: string): strin
     'Reply again with ONLY the corrected JSON. No prose, no code fences.',
   ].join('\n');
 }
-
-/** Embeddings never route or fall back — they are local, free, and unlimited. */
-export async function embed(texts: string[]): Promise<{
-  vectors: Float32Array[];
-  model: string;
-  dim: number;
-}> {
-  const provider = getEmbedder();
-  const started = Date.now();
-  try {
-    const result = await provider.embed(texts);
-    recordRun({
-      provider: provider.id,
-      model: provider.model,
-      operation: 'embed',
-      tier: 'B',
-      status: 'ok',
-      durationMs: Date.now() - started,
-      meta: { count: texts.length },
-    });
-    return result;
-  } catch (error) {
-    recordRun({
-      provider: provider.id,
-      model: provider.model,
-      operation: 'embed',
-      tier: 'B',
-      status: 'error',
-      durationMs: Date.now() - started,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
-}
-
-export const llm = { complete, embed, getTierA, getTierB, getEmbedder };

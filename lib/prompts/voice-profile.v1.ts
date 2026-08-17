@@ -1,10 +1,9 @@
 import { z } from 'zod';
-import type { Prompt } from './index';
 
 /**
  * The voice profile rides along in every generation prompt, so it is kept
- * deliberately short — prompt size is what burns a tokens-per-minute quota, and
- * a 2,000-word style essay would cost more than it buys on every single draft.
+ * deliberately short — prompt size is what burns quota, and a 2,000-word
+ * style essay would cost more than it buys on every single draft.
  */
 
 export const voiceFieldsSchema = z.object({
@@ -27,13 +26,7 @@ export const voiceProfileSchema = z.object({
 export type VoiceFields = z.infer<typeof voiceFieldsSchema>;
 export type VoiceProfileOutput = z.infer<typeof voiceProfileSchema>;
 
-export interface VoiceProfileVars {
-  handle: string;
-  niche: string;
-  captions: string[];
-}
-
-const SYSTEM = `You reverse-engineer a creator's writing voice from their own captions.
+export const VOICE_PROFILE_SYSTEM = `You reverse-engineer a creator's writing voice from their own captions.
 
 You are describing how THIS person writes, not how a good caption should be written. If they overuse a word, that is part of the voice. If they never use emoji, say so.
 
@@ -44,26 +37,26 @@ Rules:
 - The markdown is a brief the writer reads before drafting: at most 250 words, no headings deeper than one level.
 - JSON only.`;
 
-export const voiceProfile: Prompt<VoiceProfileVars, VoiceProfileOutput> = {
-  id: 'voice-profile',
-  version: 1,
-  tier: 'A',
-  system: SYSTEM,
-  schema: voiceProfileSchema,
-  render: (vars) =>
-    [
-      `Creator: @${vars.handle}${vars.niche ? ` — ${vars.niche}` : ''}`,
-      '',
-      `Their ${vars.captions.length} best-performing captions:`,
-      '',
-      ...vars.captions.map((c, i) => `--- ${i + 1} ---\n${c.slice(0, 900)}`),
-      '',
-      'Return {"markdown":"...","fields":{"tone":"...","sentence_rhythm":"...","vocabulary":[...],"recurring_phrases":[...],"banned_words":[...],"cta_style":"...","emoji_policy":"...","formatting_habits":"...","recurring_subjects":[...]}}',
-    ].join('\n'),
-};
+export interface VoiceProfileInput {
+  handle: string;
+  niche: string | null;
+  captions: string[];
+}
 
-/** Compact form injected into every generation prompt. Keep it under ~150 tokens. */
-export function renderVoiceForPrompt(markdown: string, fields: VoiceFields): string {
+export function buildVoiceProfilePrompt(input: VoiceProfileInput): string {
+  return [
+    `Creator: @${input.handle}${input.niche ? ` — ${input.niche}` : ''}`,
+    '',
+    `Their ${input.captions.length} best-performing captions:`,
+    '',
+    ...input.captions.map((c, i) => `--- ${i + 1} ---\n${c.slice(0, 900)}`),
+    '',
+    'Return {"markdown":"...","fields":{"tone":"...","sentence_rhythm":"...","vocabulary":[...],"recurring_phrases":[...],"banned_words":[...],"cta_style":"...","emoji_policy":"...","formatting_habits":"...","recurring_subjects":[...]}}',
+  ].join('\n');
+}
+
+/** Compact form injected into every generation prompt. Kept under ~150 tokens. */
+export function renderVoiceForPrompt(fields: VoiceFields): string {
   return [
     `VOICE — write as this person, not about them:`,
     `tone: ${fields.tone}`,

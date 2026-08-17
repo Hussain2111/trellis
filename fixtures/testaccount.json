@@ -1,0 +1,81 @@
+[
+  {
+    "shortCode": "CTest0001",
+    "type": "Video",
+    "productType": "clips",
+    "isVideo": true,
+    "caption": "The mistake killing your reach\n\nA reel about the one thing most people get wrong.\n\n#photography #tips #reels",
+    "timestamp": "2026-08-01T12:00:00.000Z",
+    "likesCount": 5200,
+    "commentsCount": 210,
+    "videoViewCount": 84000,
+    "videoPlayCount": 91000,
+    "videoDuration": 24,
+    "displayUrl": "https://example.com/thumb1.jpg",
+    "ownerUsername": "testaccount",
+    "ownerFullName": "Test Account",
+    "followersCount": 42000,
+    "followsCount": 512,
+    "postsCount": 6,
+    "verified": false
+  },
+  {
+    "shortCode": "CTest0002",
+    "type": "Sidecar",
+    "isVideo": false,
+    "caption": "3 things I wish I knew starting out\n\nSwipe for the full breakdown.\n\n#smallbusiness #growth",
+    "timestamp": "2026-07-28T09:30:00.000Z",
+    "likesCount": 1800,
+    "commentsCount": 64,
+    "childPosts": [
+      { "displayUrl": "https://example.com/c1.jpg" },
+      { "displayUrl": "https://example.com/c2.jpg" },
+      { "displayUrl": "https://example.com/c3.jpg" }
+    ]
+  },
+  {
+    "shortCode": "CTest0003",
+    "type": "Image",
+    "isVideo": false,
+    "caption": "Behind the scenes of today's shoot.\n\n#bts #photography",
+    "timestamp": "2026-07-20T18:00:00.000Z",
+    "likesCount": 940,
+    "commentsCount": 22,
+    "displayUrl": "https://example.com/single1.jpg"
+  },
+  {
+    "shortCode": "CTest0004",
+    "type": "Video",
+    "productType": "clips",
+    "isVideo": true,
+    "caption": "I tried this for 30 days straight\n\nHere's what happened.\n\n#experiment #reels",
+    "timestamp": "2026-07-10T15:00:00.000Z",
+    "likesCount": 552000,
+    "commentsCount": 8100,
+    "videoViewCount": 4100000,
+    "videoPlayCount": 4300000,
+    "videoDuration": 31
+  },
+  {
+    "shortCode": "CTest0005",
+    "type": "Image",
+    "isVideo": false,
+    "caption": "Stop doing this in your first year\n\n#advice #newbusiness",
+    "timestamp": "2026-06-30T11:00:00.000Z",
+    "likesCount": 1120,
+    "commentsCount": 40
+  },
+  {
+    "shortCode": "CTest0006",
+    "type": "Video",
+    "productType": "clips",
+    "isVideo": true,
+    "caption": "The DM funnel that made me my first sale\n\n#dmfunnel #sales #reels",
+    "timestamp": "2026-06-15T08:00:00.000Z",
+    "likesCount": 6100,
+    "commentsCount": 340,
+    "videoViewCount": 102000,
+    "videoPlayCount": 111000,
+    "videoDuration": 28
+  }
+]

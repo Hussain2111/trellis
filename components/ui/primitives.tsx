@@ -14,10 +14,7 @@ export function Panel({
   ...props
 }: ComponentProps<'section'>): React.JSX.Element {
   return (
-    <section
-      className={cn('rounded-[4px] border border-line bg-surface', className)}
-      {...props}
-    >
+    <section className={cn('rounded-[4px] border border-line bg-surface', className)} {...props}>
       {children}
     </section>
   );

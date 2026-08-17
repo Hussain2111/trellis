@@ -1,118 +1,85 @@
-import { activeVoice, voiceVersions } from '@/lib/analysis/voice';
-import { Badge, Button, Empty, Panel, PanelHeader } from '@/components/ui/primitives';
-import { GeneratedBy } from '@/components/ui/data';
-import { ActionButton } from '@/components/action-button';
-import { activateVoiceAction, runJobAction, saveVoiceAction } from '../actions';
-import { formatRelative } from '@/lib/utils';
+import { activeVoice } from '@/lib/analysis/voice';
+import { Badge, Empty, Panel, PanelHeader } from '@/components/ui/primitives';
 
 export const dynamic = 'force-dynamic';
 
-export default async function VoicePage(): Promise<React.JSX.Element> {
-  const voice = activeVoice();
-  const versions = voiceVersions();
-
+function FieldRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | string[];
+}): React.JSX.Element {
   return (
-    <div className="mx-auto max-w-3xl px-6 py-6">
-      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[20px] font-semibold">Voice</h1>
-          <p className="mt-1 max-w-2xl text-[13px] text-ink-muted">
-            Built from your best captions, then edited by you. Your edits always beat regeneration.
-            It rides along in every generation prompt, so it is kept deliberately short.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {voice ? <GeneratedBy value={voice.generatedBy} /> : null}
-          <ActionButton
-            action={runJobAction.bind(null, 'build_voice_profile')}
-            label={voice ? 'regenerate' : 'build profile'}
-            confirm={
-              voice
-                ? 'Regenerate? The current version is kept and you can switch back to it.'
-                : undefined
-            }
-          />
-        </div>
-      </header>
+    <div className="border-b border-line px-4 py-2.5 last:border-b-0">
+      <div className="label mb-1">{label}</div>
+      {Array.isArray(value) ? (
+        value.length === 0 ? (
+          <span className="text-[12px] text-ink-faint">none</span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {value.map((v) => (
+              <Badge key={v}>{v}</Badge>
+            ))}
+          </div>
+        )
+      ) : (
+        <p className="text-[13px] text-ink">{value}</p>
+      )}
+    </div>
+  );
+}
 
-      {!voice ? (
+export default async function VoicePage(): Promise<React.JSX.Element> {
+  const voice = await activeVoice();
+
+  if (!voice) {
+    return (
+      <div className="mx-auto max-w-5xl px-6 py-6">
         <Panel>
+          <PanelHeader title="Voice profile" />
           <Empty
             title="No voice profile yet."
-            detail="It reads your top ~20 captions in one call. Without it, drafts default to a generic register you will not recognise as yours."
+            detail="Built automatically from your top captions once analysis has run."
           />
         </Panel>
-      ) : (
-        <>
-          <Panel className="mb-4">
-            <PanelHeader
-              title={`Version ${voice.version}`}
-              aside={voice.editedByUser ? <Badge tone="signal">edited by you</Badge> : null}
-            />
-            <form action={saveVoiceAction} className="px-4 py-4">
-              <textarea
-                name="markdown"
-                defaultValue={voice.markdown}
-                rows={16}
-                className="w-full rounded-[3px] border border-line-strong bg-canvas px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink focus:border-signal/50 focus:outline-none"
-              />
-              <div className="mt-2 flex items-center justify-between">
-                <span className="text-[11px] text-ink-faint">
-                  Saving creates a new version. Nothing is overwritten.
-                </span>
-                <Button variant="primary" size="sm" type="submit">
-                  Save as new version
-                </Button>
-              </div>
-            </form>
-          </Panel>
+      </div>
+    );
+  }
 
-          <Panel className="mb-4">
-            <PanelHeader title="Structured fields" />
-            <dl className="divide-y divide-line">
-              {Object.entries(voice.fields).map(([key, value]) => (
-                <div key={key} className="flex gap-4 px-4 py-2">
-                  <dt className="label w-40 shrink-0 pt-0.5">{key.replace(/_/g, ' ')}</dt>
-                  <dd className="text-[13px] text-ink-muted">
-                    {Array.isArray(value)
-                      ? value.length > 0
-                        ? value.join(', ')
-                        : '—'
-                      : String(value) || '—'}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </Panel>
+  const { fields } = voice;
 
-          {versions.length > 1 ? (
-            <Panel>
-              <PanelHeader title="History" />
-              <ul className="divide-y divide-line">
-                {versions.map((version) => (
-                  <li key={version.id} className="flex items-center gap-3 px-4 py-2">
-                    <span className="metric text-[12px]">v{version.version}</span>
-                    <span className="text-[12px] text-ink-faint">
-                      {formatRelative(version.createdAt)}
-                    </span>
-                    {version.editedByUser ? <Badge tone="signal">yours</Badge> : null}
-                    {version.active ? <Badge tone="good">active</Badge> : null}
-                    <span className="ml-auto">
-                      {version.active ? null : (
-                        <ActionButton
-                          action={activateVoiceAction.bind(null, version.id)}
-                          label="restore"
-                          variant="ghost"
-                        />
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-          ) : null}
-        </>
-      )}
+  return (
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <header className="mb-5 flex items-center justify-between">
+        <div>
+          <h1 className="text-[20px] leading-tight font-semibold">Voice profile</h1>
+          <p className="mt-1 text-[13px] text-ink-muted">
+            Reverse-engineered from your own captions — used to keep every draft sounding like you.
+          </p>
+        </div>
+        <Badge tone="signal">v{voice.version}</Badge>
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel>
+          <PanelHeader title="Summary" />
+          <div className="px-4 py-3 text-[13px] whitespace-pre-wrap text-ink">{voice.markdown}</div>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Fields" />
+          <FieldRow label="Tone" value={fields.tone} />
+          <FieldRow label="Sentence rhythm" value={fields.sentence_rhythm} />
+          <FieldRow label="Vocabulary" value={fields.vocabulary} />
+          <FieldRow label="Recurring phrases" value={fields.recurring_phrases} />
+          <FieldRow label="Banned words" value={fields.banned_words} />
+          <FieldRow label="CTA style" value={fields.cta_style} />
+          <FieldRow label="Emoji policy" value={fields.emoji_policy} />
+          <FieldRow label="Formatting habits" value={fields.formatting_habits} />
+          <FieldRow label="Recurring subjects" value={fields.recurring_subjects} />
+        </Panel>
+      </div>
     </div>
   );
 }

@@ -1,110 +1,67 @@
-import type { AggregateSnapshot } from './aggregate';
-import type { Gap, GapAnalysis, Pattern } from '../prompts/gap-analysis.v1';
+import { predicateForKey, type EnrichedPost, type Pattern } from './patterns';
+import { share } from './stats';
+
+export interface ReconcileIssue {
+  patternKey: string;
+  reason: string;
+}
 
 /**
- * Validate the model's claims against Layer A before anything is stored.
+ * The evidence-reconciliation check the spec requires before this stage
+ * counts as done: every stat's claimed post_ids must actually support the
+ * claim. Three independent checks per pattern, any of which failing means
+ * the "receipts" can't be trusted:
  *
- * This is the load-bearing part of the whole design. The model writes the
- * sentence; the arithmetic underneath it has to be ours. A claim whose evidence
- * is empty, whose post_ids don't exist, or whose percentages don't appear
- * anywhere in the aggregates is rejected — and a rejected analysis is retried
- * once with the failures spelled out.
+ * 1. Every listed post id exists in the corpus.
+ * 2. Every listed post id actually satisfies the predicate the pattern's
+ *    `key` implies (re-derived from `predicateForKey`, not trusted from
+ *    whatever built the pattern).
+ * 3. The stat recomputed from `postIds.length / sampleSize` matches the
+ *    stored stat, within floating-point tolerance.
  */
+export function reconcilePatterns(patterns: Pattern[], corpus: EnrichedPost[]): ReconcileIssue[] {
+  const byId = new Map(corpus.map((p) => [p.id, p]));
+  const issues: ReconcileIssue[] = [];
 
-export interface ReconciliationIssue {
-  where: string;
-  problem: string;
-}
-
-export interface ReconciliationResult {
-  ok: boolean;
-  issues: ReconciliationIssue[];
-  /** post_ids that were cited but do not exist in the corpus. */
-  unknownEvidence: number[];
-}
-
-/** Every percentage-like token the aggregates actually contain. */
-function knownNumbers(aggregate: string): Set<string> {
-  const out = new Set<string>();
-  for (const match of aggregate.matchAll(/\d+(?:\.\d+)?%?/g)) {
-    out.add(match[0]);
-    // "51%" should also satisfy a claim that says "51".
-    if (match[0].endsWith('%')) out.add(match[0].slice(0, -1));
-  }
-  return out;
-}
-
-function statIsGrounded(stat: string, numbers: Set<string>): boolean {
-  const tokens = [...stat.matchAll(/\d+(?:\.\d+)?%?/g)].map((m) => m[0]);
-  // A stat with no number in it is a description, not a statistic — allowed,
-  // because "more than half" style phrasing is checked by the number beside it.
-  if (tokens.length === 0) return true;
-  return tokens.some((token) => numbers.has(token) || numbers.has(token.replace('%', '')));
-}
-
-export function reconcile(
-  analysis: GapAnalysis,
-  snapshot: AggregateSnapshot,
-  renderedAggregate: string,
-): ReconciliationResult {
-  const issues: ReconciliationIssue[] = [];
-  const validPostIds = new Set<number>([
-    ...snapshot.winners.map((w) => w.postId),
-    ...snapshot.archetypes.map((a) => a.archetypeId),
-  ]);
-  const numbers = knownNumbers(renderedAggregate);
-  const unknownEvidence: number[] = [];
-
-  const checkOne = (item: Pattern | Gap, where: string): void => {
-    if (item.evidence.length === 0) {
-      issues.push({ where, problem: 'evidence is empty — a claim with no receipts is not usable' });
+  for (const pattern of patterns) {
+    let predicate: (post: EnrichedPost) => boolean;
+    try {
+      predicate = predicateForKey(pattern.key);
+    } catch (error) {
+      issues.push({ patternKey: pattern.key, reason: (error as Error).message });
+      continue;
     }
 
-    const unknown = item.evidence.filter((id) => !validPostIds.has(id));
-    if (unknown.length > 0) {
-      unknownEvidence.push(...unknown);
-      issues.push({
-        where,
-        problem: `cites post_ids not present in the aggregates: ${unknown.join(', ')}`,
-      });
-    }
+    for (const [side, ids, sampleSize, stat] of [
+      ['niche', pattern.nichePostIds, pattern.nicheSampleSize, pattern.nicheStat],
+      ['my', pattern.myPostIds, pattern.mySampleSize, pattern.myStat],
+    ] as const) {
+      for (const id of ids) {
+        const post = byId.get(id);
+        if (!post) {
+          issues.push({
+            patternKey: pattern.key,
+            reason: `${side} post id ${id} is not in the corpus`,
+          });
+          continue;
+        }
+        if (!predicate(post)) {
+          issues.push({
+            patternKey: pattern.key,
+            reason: `${side} post id ${id} does not satisfy "${pattern.key}"`,
+          });
+        }
+      }
 
-    if (!statIsGrounded(item.niche_stat, numbers)) {
-      issues.push({ where, problem: `niche_stat "${item.niche_stat}" does not match any figure in the aggregates` });
+      const recomputed = share(ids.length, sampleSize);
+      if (Math.abs(recomputed - stat) > 1e-9) {
+        issues.push({
+          patternKey: pattern.key,
+          reason: `${side}Stat is ${stat} but ${ids.length}/${sampleSize} recomputes to ${recomputed}`,
+        });
+      }
     }
-    if (!statIsGrounded(item.my_stat, numbers)) {
-      issues.push({ where, problem: `my_stat "${item.my_stat}" does not match any figure in the aggregates` });
-    }
-  };
-
-  analysis.patterns.forEach((pattern, index) => checkOne(pattern, `pattern ${index + 1}`));
-  checkOne(analysis.gap, 'gap');
-
-  if (analysis.patterns.length !== 5) {
-    issues.push({ where: 'patterns', problem: `expected exactly 5, got ${analysis.patterns.length}` });
   }
 
-  return { ok: issues.length === 0, issues, unknownEvidence: [...new Set(unknownEvidence)] };
-}
-
-/** Turned into a repair prompt when reconciliation fails the first time. */
-export function describeIssues(issues: ReconciliationIssue[]): string {
-  return issues.map((i) => `- ${i.where}: ${i.problem}`).join('\n');
-}
-
-/**
- * Drop evidence ids that don't exist rather than storing a claim that links
- * nowhere. Only used after a failed retry, when something is better than
- * nothing — and the UI shows that the analysis was repaired.
- */
-export function pruneEvidence(analysis: GapAnalysis, snapshot: AggregateSnapshot): GapAnalysis {
-  const valid = new Set(snapshot.winners.map((w) => w.postId));
-  const prune = <T extends Pattern>(item: T): T => ({
-    ...item,
-    evidence: item.evidence.filter((id) => valid.has(id)),
-  });
-  return {
-    patterns: analysis.patterns.map(prune),
-    gap: prune(analysis.gap),
-  };
+  return issues;
 }

@@ -2,14 +2,11 @@ import { env } from '../env';
 import { ApifyScraper } from './scraper/apify';
 import { FixtureScraper } from './scraper/fixture';
 import { FakeScraper } from './scraper/fake';
-import { FakeTranscriber, UnavailableTranscriber } from './transcription/fake';
-import { WhisperTranscriber } from './transcription/whisper';
+import { getLlm } from './llm';
 import { NoneImageProvider } from './image/none';
 import { PollinationsImageProvider } from './image/pollinations';
-import { getEmbedder, getTierA, getTierB } from './llm';
 import type { ImageProvider } from './image/types';
 import type { ScraperProvider } from './scraper/types';
-import type { TranscriptionProvider } from './transcription/types';
 import type { ProviderDescriptor } from './types';
 
 export { assertProviderAllowed, PaidProviderError } from './guard';
@@ -31,27 +28,17 @@ export function getScraper(): ScraperProvider {
       return new ApifyScraper({
         token: e.APIFY_TOKEN ?? '',
         actor: e.APIFY_ACTOR,
+        hashtagActor: e.APIFY_HASHTAG_ACTOR,
         monthlyAllowanceUsd: e.APIFY_MONTHLY_CREDIT_USD,
+        webhookSecret: e.APIFY_WEBHOOK_SECRET,
       });
   }
 }
 
 export function getImageProvider(): ImageProvider {
-  const provider = env().IMAGE_PROVIDER;
-  if (provider === 'pollinations') return new PollinationsImageProvider();
-  return new NoneImageProvider();
-}
-
-export function getTranscriber(): TranscriptionProvider {
   const e = env();
-  if (!e.ENABLE_TRANSCRIPTION) {
-    return new UnavailableTranscriber('ENABLE_TRANSCRIPTION=false');
-  }
-  if (e.SCRAPE_MODE === 'fake') return new FakeTranscriber();
-  return new WhisperTranscriber({
-    ...(e.WHISPER_BIN ? { binary: e.WHISPER_BIN } : {}),
-    ...(e.WHISPER_MODEL_PATH ? { modelPath: e.WHISPER_MODEL_PATH } : {}),
-  });
+  if (e.IMAGE_PROVIDER === 'pollinations') return new PollinationsImageProvider();
+  return new NoneImageProvider();
 }
 
 export interface ProviderStatus extends ProviderDescriptor {
@@ -63,12 +50,21 @@ export interface ProviderStatus extends ProviderDescriptor {
 /** Everything Settings needs to show what is wired up and what it costs. */
 export async function providerStatuses(): Promise<ProviderStatus[]> {
   const entries: (() => Promise<ProviderStatus>)[] = [
-    async () => describe(safe(() => getTierA()), 'Tier A (reasoning)'),
-    async () => describe(safe(() => getTierB()), 'Tier B (local)'),
-    async () => describe(safe(() => getEmbedder()), 'Embeddings'),
-    async () => describe(safe(() => getScraper()), 'Scraping'),
-    async () => describe(safe(() => getTranscriber()), 'Transcription'),
-    async () => describe(safe(() => getImageProvider()), 'Images'),
+    async () =>
+      describe(
+        safe(() => getScraper()),
+        'Scraping',
+      ),
+    async () =>
+      describe(
+        safe(() => getLlm()),
+        'Model',
+      ),
+    async () =>
+      describe(
+        safe(() => getImageProvider()),
+        'Images',
+      ),
   ];
   return Promise.all(entries.map((fn) => fn()));
 }

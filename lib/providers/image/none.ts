@@ -1,5 +1,5 @@
 import type { ProviderHealth } from '../types';
-import type { BackgroundRequest, BackgroundResult, ImageProvider } from './types';
+import type { BackgroundResult, ImageProvider } from './types';
 
 /**
  * The default. Returns no bytes, which tells the renderer to draw a gradient
@@ -16,7 +16,7 @@ export class NoneImageProvider implements ImageProvider {
     return { ok: true, detail: 'gradients only — always available' };
   }
 
-  async background(_request: BackgroundRequest): Promise<BackgroundResult> {
+  async background(): Promise<BackgroundResult> {
     return {
       bytes: null,
       provider: this.id,

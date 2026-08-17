@@ -1,12 +1,13 @@
 import { recordRun } from '../runs/log';
 
 /**
- * Instagram Graph API publishing. Free to call, and viable for one self-owned
- * account without App Review: Standard Access covers accounts that hold a role
- * on the app. See docs/instagram-setup.md.
+ * Instagram Graph API publishing. Free to call, and viable for one
+ * self-owned account without App Review under Standard Access (the account
+ * holds a role on the developer's own app). See docs/instagram-setup.md.
  *
- * Container model: create a media container, poll until FINISHED, then publish.
- * Carousels create children first, then a parent with media_type=CAROUSEL.
+ * Container model: create a media container, poll until FINISHED, then
+ * publish. Carousels create children first, then a parent with
+ * media_type=CAROUSEL.
  */
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
@@ -24,6 +25,13 @@ export class GraphError extends Error {
   }
 }
 
+let fetchImpl: typeof fetch = (...args) => fetch(...args);
+
+/** Test seam: swap in a fake fetch without touching the network or process.env. */
+export function __setGraphFetchForTests(fn: typeof fetch | null): void {
+  fetchImpl = fn ?? ((...args) => fetch(...args));
+}
+
 async function call<T>(
   path: string,
   options: { method?: 'GET' | 'POST'; token: string; params?: Record<string, string> },
@@ -33,12 +41,12 @@ async function call<T>(
 
   const res =
     options.method === 'POST'
-      ? await fetch(url, {
+      ? await fetchImpl(url, {
           method: 'POST',
           headers: { 'content-type': 'application/x-www-form-urlencoded' },
           body,
         })
-      : await fetch(`${url}?${body}`);
+      : await fetchImpl(`${url}?${body}`);
 
   const text = await res.text();
   if (!res.ok) {
@@ -92,7 +100,7 @@ export async function waitForContainer(
   const intervalMs = options.intervalMs ?? 5_000;
   const deadline = Date.now() + timeoutMs;
 
-  while (Date.now() < deadline) {
+  for (;;) {
     const result = await call<{ status_code: string; status?: string }>(containerId, {
       token,
       params: { fields: 'status_code,status' },
@@ -103,9 +111,11 @@ export async function waitForContainer(
     if (result.status_code === 'ERROR' || result.status_code === 'EXPIRED') {
       throw new GraphError(400, `container ${result.status_code}: ${result.status ?? 'no detail'}`);
     }
+    if (Date.now() >= deadline) {
+      throw new Error(`container ${containerId} did not finish within ${timeoutMs / 1000}s`);
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`container ${containerId} did not finish within ${timeoutMs / 1000}s`);
 }
 
 export async function publishContainer(
@@ -127,10 +137,9 @@ export async function publishingLimit(
   token: string,
 ): Promise<{ used: number; cap: number } | null> {
   try {
-    const result = await call<{ data: { quota_usage: number; config?: { quota_total?: number } }[] }>(
-      `${igUserId}/content_publishing_limit`,
-      { token, params: { fields: 'quota_usage,config' } },
-    );
+    const result = await call<{
+      data: { quota_usage: number; config?: { quota_total?: number } }[];
+    }>(`${igUserId}/content_publishing_limit`, { token, params: { fields: 'quota_usage,config' } });
     const row = result.data[0];
     if (!row) return null;
     return { used: row.quota_usage, cap: row.config?.quota_total ?? 25 };
@@ -163,10 +172,7 @@ export async function inspectToken(token: string): Promise<TokenInfo> {
       expiresAt,
       daysRemaining,
       valid: result.data.is_valid !== false,
-      detail:
-        daysRemaining === null
-          ? 'no expiry reported'
-          : `${daysRemaining} day(s) remaining`,
+      detail: daysRemaining === null ? 'no expiry reported' : `${daysRemaining} day(s) remaining`,
     };
   } catch (error) {
     return { expiresAt: null, daysRemaining: null, valid: false, detail: (error as Error).message };
@@ -182,7 +188,7 @@ export async function refreshLongLivedToken(token: string): Promise<string> {
     token,
     params: { grant_type: 'ig_refresh_token' },
   });
-  recordRun({
+  await recordRun({
     provider: 'instagram-graph',
     operation: 'refresh_token',
     status: 'ok',

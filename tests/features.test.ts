@@ -1,178 +1,117 @@
 import { describe, expect, it } from 'vitest';
-import {
-  cadenceByWeek,
-  computeFeatures,
-  engagementRate,
-  firstLine,
-  hookText,
-  markOutliers,
-  summariseByFormat,
-} from '@/lib/analysis/features';
-import { median, percentile, robustZ, trailingMedian } from '@/lib/analysis/stats';
-import type { Post } from '@/lib/db/schema';
+import { computeFeatures, engagementRate, hookText, markOutliers } from '../lib/analysis/features';
+import type { Post } from '../lib/db/schema';
 
-const DAY = 86400;
-const nowS = Math.floor(Date.now() / 1000);
-
-function post(overrides: Partial<Post> = {}): Post {
+let nextId = 1;
+function post(overrides: Partial<Post>): Post {
   return {
-    id: 1,
+    id: nextId++,
     accountId: 1,
-    shortcode: 'ABC',
+    shortcode: `S${nextId}`,
     type: 'reel',
     caption: null,
-    takenAt: nowS,
+    takenAt: new Date('2026-06-01T14:00:00Z'),
     likes: 100,
-    comments: 4,
+    comments: 10,
     views: null,
     plays: null,
     durationS: null,
     carouselCount: null,
     thumbnailUrl: null,
-    mediaUrls: [],
+    mediaUrls: null,
     isSponsored: false,
     raw: {},
-    firstSeenAt: nowS,
-    lastSeenAt: nowS,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
     ...overrides,
-  } as Post;
+  };
 }
 
-describe('stats', () => {
-  it('handles even and odd medians, and empty input', () => {
-    expect(median([])).toBe(0);
-    expect(median([3, 1, 2])).toBe(2);
-    expect(median([4, 1, 3, 2])).toBe(2.5);
+describe('hookText', () => {
+  it('strips hashtags and mentions from the first line', () => {
+    expect(hookText('Big news today! #excited @friend\n\nMore text')).toBe('Big news today!');
   });
 
-  it('interpolates percentiles', () => {
-    expect(percentile([1, 2, 3, 4], 0.5)).toBe(2.5);
-    expect(percentile([1, 2, 3, 4], 0)).toBe(1);
-    expect(percentile([1, 2, 3, 4], 1)).toBe(4);
-  });
-
-  it('uses a robust z-score so one hit does not inflate the baseline', () => {
-    // A single 100k outlier would drag a mean-based z toward zero for
-    // everything else; the median/MAD version keeps it visible.
-    const values = [100, 110, 95, 105, 100, 100000];
-    expect(robustZ(100000, values)).toBeGreaterThan(10);
-    expect(Math.abs(robustZ(105, values))).toBeLessThan(2);
-  });
-
-  it('computes a trailing median over the preceding window only', () => {
-    const values = [10, 20, 30, 40, 1000];
-    expect(trailingMedian(values, 4, 4)).toBe(25);
+  it('is empty for an empty caption', () => {
+    expect(hookText(null)).toBe('');
+    expect(hookText('')).toBe('');
   });
 });
 
-describe('caption features', () => {
-  it('takes the first non-empty line as the hook', () => {
-    expect(firstLine('\n\n  The real hook  \nrest')).toBe('The real hook');
-    expect(firstLine(null)).toBe('');
+describe('computeFeatures', () => {
+  it('detects a question in the first line', () => {
+    const f = computeFeatures(post({ caption: 'Ever wonder why this works?\n\nBody text.' }), 1000);
+    expect(f.hasQuestion).toBe(true);
   });
 
-  it('strips hashtag walls and mentions from the hook', () => {
-    expect(hookText('#tips #photo Real hook here @someone')).toBe('Real hook here');
-  });
-
-  it('puts the spoken hook first when a reel was transcribed', () => {
-    expect(hookText('Caption opener', 'Nobody tells you this')).toBe(
-      'Nobody tells you this — Caption opener',
-    );
-  });
-
-  it('counts hashtags, mentions and emoji including ZWJ sequences', () => {
+  it('detects a call-to-action', () => {
     const f = computeFeatures(
-      post({ caption: 'Look 👨‍👩‍👧 at this 🔥 #one #two @me @you' }),
+      post({ caption: 'Great tip today.\n\nComment "yes" below to get the guide.' }),
       1000,
     );
+    expect(f.hasCta).toBe(true);
+  });
+
+  it('does not false-positive a CTA on an ordinary caption', () => {
+    const f = computeFeatures(post({ caption: 'Just a normal caption about my day.' }), 1000);
+    expect(f.hasCta).toBe(false);
+  });
+
+  it('counts hashtags, mentions, and emoji', () => {
+    const f = computeFeatures(post({ caption: 'Hi @friend! 🎉🔥 #fun #times' }), 1000);
     expect(f.hashtagCount).toBe(2);
-    expect(f.mentionCount).toBe(2);
-    // The family emoji is one grapheme but several pictographic code points;
-    // what matters is that emoji are detected at all, not the exact tally.
-    expect(f.emojiCount).toBeGreaterThanOrEqual(2);
+    expect(f.mentionCount).toBe(1);
+    expect(f.emojiCount).toBe(2);
   });
 
-  it('detects a CTA conservatively', () => {
-    expect(computeFeatures(post({ caption: 'Comment YES below' }), 100).hasCta).toBe(true);
-    expect(computeFeatures(post({ caption: 'Link in bio' }), 100).hasCta).toBe(true);
-    expect(computeFeatures(post({ caption: 'Save this for later' }), 100).hasCta).toBe(true);
-    // A false positive here quietly corrupts a benchmark claim.
-    expect(computeFeatures(post({ caption: 'I commented on the weather' }), 100).hasCta).toBe(false);
+  it('reads the posted hour and day of week in UTC from takenAt', () => {
+    const f = computeFeatures(post({ takenAt: new Date('2026-06-01T14:30:00Z') }), 1000);
+    expect(f.postedHour).toBe(14);
+    expect(f.postedDow).toBe(1); // Monday
   });
 
-  it('detects a question in the opening only', () => {
-    expect(computeFeatures(post({ caption: 'Ever wondered why?' }), 100).hasQuestion).toBe(true);
-    expect(
-      computeFeatures(post({ caption: `${'x'.repeat(400)}\nwhy?` }), 100).hasQuestion,
-    ).toBe(false);
+  it('is null for postedHour/postedDow when there is no takenAt', () => {
+    const f = computeFeatures(post({ takenAt: null }), 1000);
+    expect(f.postedHour).toBeNull();
+    expect(f.postedDow).toBeNull();
   });
 });
 
-describe('engagement normalisation', () => {
-  it('normalises by follower count, so account size cancels out', () => {
-    const small = engagementRate(post({ likes: 400, comments: 20 }), 5_000);
-    const large = engagementRate(post({ likes: 2_000, comments: 100 }), 200_000);
-    expect(small).toBeCloseTo(0.084);
-    expect(large).toBeCloseTo(0.0105);
-    expect(small!).toBeGreaterThan(large!);
+describe('engagementRate', () => {
+  it('normalizes likes+comments by followers', () => {
+    expect(engagementRate(post({ likes: 100, comments: 20 }), 1000)).toBeCloseTo(0.12, 5);
   });
 
-  it('returns null rather than a fake number when followers are unknown', () => {
-    expect(engagementRate(post(), null)).toBeNull();
-    expect(engagementRate(post(), 0)).toBeNull();
+  it('is null with no follower count', () => {
+    expect(engagementRate(post({}), null)).toBeNull();
+    expect(engagementRate(post({}), 0)).toBeNull();
   });
 });
 
-describe('outlier detection', () => {
-  const rows = Array.from({ length: 30 }, (_, i) =>
-    post({
-      id: i + 1,
-      takenAt: nowS - (30 - i) * 2 * DAY,
-      likes: i === 20 ? 5000 : 100 + (i % 5) * 10,
-    }),
-  ).map((p) => ({ post: p, engagementRate: 0.02 }));
+describe('markOutliers', () => {
+  it('flags a post well above its trailing median as an outlier', () => {
+    const base = new Date('2026-01-01T00:00:00Z').getTime();
+    const day = 86_400_000;
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      post({ id: i + 1, likes: 100, takenAt: new Date(base + i * day) }),
+    );
+    // The 11th post, well above the trailing median of 100.
+    rows.push(post({ id: 11, likes: 5000, takenAt: new Date(base + 10 * day) }));
 
-  it('flags a post far above its trailing median', () => {
-    const result = markOutliers(rows, 2.5);
-    expect(result.get(21)?.isOutlier).toBe(true);
+    const result = markOutliers(
+      rows.map((r) => ({ post: r, engagementRate: null })),
+      3,
+    );
+    expect(result.get(11)?.isOutlier).toBe(true);
+    expect(result.get(1)?.isOutlier).toBe(false);
   });
 
-  it('does not flag ordinary posts', () => {
-    const result = markOutliers(rows, 2.5);
-    const flagged = [...result.values()].filter((r) => r.isOutlier);
-    expect(flagged).toHaveLength(1);
-  });
-
-  it('refuses to call anything an outlier before there is history', () => {
-    const early = rows.slice(0, 4);
-    const result = markOutliers(early, 2.5);
-    expect([...result.values()].every((r) => !r.isOutlier)).toBe(true);
-  });
-});
-
-describe('cadence and format summaries', () => {
-  it('buckets posts into weeks and ignores anything older than the window', () => {
-    const rows = [
-      post({ id: 1, takenAt: nowS - 2 * DAY }),
-      post({ id: 2, takenAt: nowS - 3 * DAY }),
-      post({ id: 3, takenAt: nowS - 400 * DAY }),
-    ];
-    const buckets = cadenceByWeek(rows, 12);
-    expect(buckets).toHaveLength(12);
-    expect(buckets.reduce((sum, b) => sum + b.total, 0)).toBe(2);
-  });
-
-  it('summarises per format with medians, not means', () => {
-    const rows = [
-      post({ id: 1, type: 'reel', likes: 100 }),
-      post({ id: 2, type: 'reel', likes: 100 }),
-      post({ id: 3, type: 'reel', likes: 100000 }),
-      post({ id: 4, type: 'carousel', likes: 50 }),
-    ];
-    const summary = summariseByFormat(rows, 1000);
-    const reel = summary.find((s) => s.type === 'reel')!;
-    expect(reel.count).toBe(3);
-    expect(reel.medianLikes).toBe(100);
+  it('never flags anything before there is enough trailing history', () => {
+    const rows = Array.from({ length: 3 }, (_, i) => post({ id: i + 1, likes: 100 * (i + 1) }));
+    const result = markOutliers(
+      rows.map((r) => ({ post: r, engagementRate: null })),
+      2,
+    );
+    for (const row of rows) expect(result.get(row.id)?.isOutlier).toBe(false);
   });
 });
