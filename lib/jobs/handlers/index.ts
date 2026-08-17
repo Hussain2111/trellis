@@ -4,6 +4,7 @@ import { classifyHooks } from './classify-hooks';
 import { computeFeatures } from './compute-features';
 import { discoverCompetitors } from './discover-competitors';
 import { generateDrafts } from './generate-drafts';
+import { renderSlides } from './render-slides';
 import { runAnalysis } from './run-analysis';
 import { scanAccount } from './scan';
 import { scanHashtag } from './scan-hashtag';
@@ -26,4 +27,5 @@ export function registerJobHandlers(): void {
   registerHandler('run_analysis', runAnalysis);
   registerHandler('build_voice_profile', buildVoiceProfile);
   registerHandler('generate_drafts', generateDrafts);
+  registerHandler('render_slides', renderSlides);
 }

@@ -340,6 +340,48 @@ this stage is considered done." It does — see below.
 
 ---
 
+## Stage 6 — slide rendering, verified
+
+- **Slide text is always rendered in code, never by a model** — satori
+  (React → SVG) + resvg (SVG → PNG), ported from the legacy build almost
+  unchanged since neither library cares about SQLite vs. Postgres. Only the
+  _background_ may come from a free image model
+  (`IMAGE_PROVIDER=pollinations`, keyless, no SLA); `none` (the default) is
+  a deterministic palette gradient and is fully functional, not a degraded
+  mode — matches the spec's "diffusion models are unreliable at
+  letterforms" reasoning exactly.
+- **Storage moved off the local filesystem, the one piece of the legacy
+  design that couldn't survive the infra pivot unchanged.** Vercel
+  functions have no persistent disk. `lib/storage/index.ts` uploads to
+  Supabase Storage when credentials are configured; without them (true for
+  this build — no Supabase project exists yet) it falls back to writing
+  under `./data/assets` and serving it back through
+  `/api/assets/[...path]`, a dev convenience gated behind the same
+  credential check, not a second production code path. The fallback route
+  has a path-traversal guard (`resolved.startsWith(...)`) since it serves
+  arbitrary sub-paths from a request.
+- **Idempotent by construction**: `render_slides` deletes a draft's prior
+  `draft_assets` rows before writing new ones, tested by asserting a
+  second render doesn't accumulate duplicates (the same pattern as Stage
+  4's back-catalogue persistence).
+- **Visually inspected, per the spec's own instruction that this is "the
+  one stage worth eyeballing rather than just testing programmatically."**
+  Rendered a hook, a body, and a CTA slide via a throwaway script (since
+  deleted) and viewed all three: headline legible at 92px, body text at
+  36px with proper line-height, the progress-dot indicator correctly
+  tracks position (2/5) and is correctly omitted on the CTA slide, and the
+  palette gradient background gives real depth without threatening
+  legibility. Screenshots weren't saved — the point was human eyes on
+  actual output, not another artifact to maintain.
+- **Also tested programmatically** (`tests/render-slides.test.ts`): a real
+  render produces a file starting with the actual PNG magic bytes
+  (`89 50 4E 47 0D 0A 1A 0A`) over 1KB, not an empty stub; slide count
+  matches hook + body-slides + cta exactly; a non-carousel draft (reel,
+  image) no-ops cleanly rather than erroring, since only carousels have
+  slides to render.
+
+---
+
 ## Deviations from the spec
 
 - **The 5 pattern dimensions and the fixed 10-category hook taxonomy are

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ApifyClient } from 'apify-client';
 import { assertProviderAllowed } from '../guard';
+import { appUrl } from '../../app-url';
 import { estimateCost } from '../../ingest/budget';
 import { normalizeDataset } from '../../ingest/normalize';
 import { recordRun } from '../../runs/log';
@@ -24,12 +25,6 @@ const DESCRIPTOR = {
 };
 
 export const FIXTURE_DIR = 'fixtures';
-
-function appUrl(): string {
-  if (process.env.APP_URL) return process.env.APP_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'http://localhost:3000';
-}
 
 export interface StartedRun {
   runId: string;
