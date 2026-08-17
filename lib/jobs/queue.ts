@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { jobs, type Job } from '../db/schema';
 import { parsePayload, type JobType } from './types';
@@ -59,8 +59,13 @@ export async function enqueue<T extends JobType>(
  * moment) can never claim the same row.
  */
 export async function claimNext(types?: JobType[]): Promise<Job | null> {
-  const typeFilter = types?.length ? sql`AND type = ANY(${types})` : sql``;
-  const rows = await db().execute<Job>(sql`
+  const typeFilter = types?.length
+    ? sql`AND type IN (${sql.join(
+        types.map((t) => sql`${t}`),
+        sql`, `,
+      )})`
+    : sql``;
+  const rows = await db().execute<Record<string, unknown>>(sql`
     UPDATE jobs
        SET status = 'claimed', claimed_at = now(), heartbeat_at = now(), attempts = attempts + 1
      WHERE id = (
@@ -80,18 +85,20 @@ export async function claimNext(types?: JobType[]): Promise<Job | null> {
 
 /** Return claims whose invocation died back to `pending`. Call at the start of every tick. */
 export async function reapStaleClaims(): Promise<number> {
-  const cutoff = new Date(Date.now() - STALE_CLAIM_SECONDS * 1000);
-  const result = await db()
-    .update(jobs)
-    .set({ status: 'pending', claimedAt: null, heartbeatAt: null })
-    .where(
-      and(
-        inArray(jobs.status, ['claimed', 'running']),
-        lt(sql`coalesce(${jobs.heartbeatAt}, ${jobs.claimedAt}, to_timestamp(0))`, cutoff),
-      ),
-    )
-    .returning({ id: jobs.id });
-  return result.length;
+  // Built as raw SQL rather than drizzle's query builder: mixing a `sql`
+  // coalesce() expression with a plain Date value through the `lt()` helper
+  // hits a type-inference bug in the postgres-js driver ("string argument
+  // must be Buffer... received Date") — passing the cutoff as an ISO string
+  // with an explicit cast sidesteps it entirely.
+  const cutoffIso = new Date(Date.now() - STALE_CLAIM_SECONDS * 1000).toISOString();
+  const rows = await db().execute<{ id: number }>(sql`
+    UPDATE jobs
+       SET status = 'pending', claimed_at = NULL, heartbeat_at = NULL
+     WHERE status IN ('claimed', 'running')
+       AND coalesce(heartbeat_at, claimed_at, to_timestamp(0)) < ${cutoffIso}::timestamptz
+    RETURNING id
+  `);
+  return rows.length;
 }
 
 export async function markRunning(id: number): Promise<void> {
@@ -211,6 +218,29 @@ export async function activeJobs(): Promise<Job[]> {
     .orderBy(desc(jobs.priority), jobs.id);
 }
 
-function hydrate(row: Job): Job {
-  return row;
+/**
+ * `db().execute(sql\`...RETURNING *\`)` is a raw query — unlike the drizzle
+ * query builder, it does not map snake_case columns to the schema's camelCase
+ * field names. Without this, `row.maxAttempts` etc. are silently `undefined`.
+ */
+function hydrate(row: Record<string, unknown>): Job {
+  return {
+    id: row.id as number,
+    type: row.type as string,
+    payload: row.payload,
+    status: row.status as Job['status'],
+    priority: row.priority as number,
+    attempts: row.attempts as number,
+    maxAttempts: row.max_attempts as number,
+    checkpoint: row.checkpoint,
+    progress: Number(row.progress),
+    progressLabel: (row.progress_label as string | null) ?? null,
+    lastError: (row.last_error as string | null) ?? null,
+    runAfter: row.run_after as Date,
+    claimedAt: (row.claimed_at as Date | null) ?? null,
+    heartbeatAt: (row.heartbeat_at as Date | null) ?? null,
+    startedAt: (row.started_at as Date | null) ?? null,
+    finishedAt: (row.finished_at as Date | null) ?? null,
+    createdAt: row.created_at as Date,
+  };
 }

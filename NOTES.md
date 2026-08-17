@@ -82,6 +82,55 @@ description says: schema, jobs infrastructure, and the keepalive cron.
 
 ---
 
+## Stage 2 — Apify scan pipeline, verified
+
+- **Two-phase fire-and-webhook design.** `scanAccount` (`lib/jobs/handlers/scan.ts`)
+  branches on `SCRAPE_MODE`: fixture/fake completes synchronously within the
+  same invocation (it's instant — no real network call), while live mode
+  fires the Apify actor via `ApifyScraper.start()` (not the blocking `.call()`
+  the old local-first build used, which would exceed a Vercel function's
+  duration ceiling) and immediately calls `markWaiting()` + throws `JobWaiting`
+  so the runner leaves it alone. `/api/webhooks/apify` is what Apify calls
+  back on `ACTOR.RUN.SUCCEEDED`/`FAILED`/etc.; it looks up the waiting job by
+  `checkpoint->>'runId'`, fetches the dataset, and finishes the job itself.
+- **Real end-to-end verification, not just unit tests.** Started the dev
+  server against the same local Postgres from Stage 1, POSTed a handle to
+  `/api/scan`, and confirmed in psql that all 6 fixture posts landed with
+  correct types/likes, the scan job reached `done`, and a `compute_features`
+  job was chained — see the table dump this produced, reproduced here for the
+  record: `CTest0001` reel, `CTest0002` carousel (3 slides), `CTest0003`
+  image, `CTest0004` reel, `CTest0005` image, `CTest0006` reel.
+- **43 tests**, all against a real Postgres (not mocked): pure-function tests
+  for `normalizeDataset`/`normalizePostType` against a hand-written fixture
+  (`fixtures/testaccount.json`, modeled on realistic Instagram-scraper field
+  names — `shortCode`, `productType: "clips"`, `childPosts`, etc.), DB
+  integration tests for `upsertAccount`/`upsertPosts` idempotency, queue
+  primitive tests (including that `FOR UPDATE SKIP LOCKED` genuinely prevents
+  two concurrent `claimNext()` calls from claiming the same row), a
+  fixture-mode scan-pipeline test (fire → complete in one tick), and a
+  webhook test that mocks `ApifyScraper.fetchRun` and drives
+  `POST /api/webhooks/apify` directly to exercise the fire → webhook →
+  complete half the fixture path can't reach.
+- **Two real Postgres bugs surfaced only by testing against a real database**
+  (a fake/in-memory DB would not have caught either): `claimNext()`'s
+  `type = ANY($1)` with a JS array parameter produced `malformed array
+literal` from postgres-js — fixed by building an `IN (...)` list with
+  `sql.join` instead. And `db().execute(sql\`...RETURNING *\`)`returns raw
+snake_case columns, not drizzle's camelCase-mapped rows —`hydrate()`was
+silently returning a`Job`whose`maxAttempts`was`undefined`, which made
+`fail()`'s exhausted-retry check always false. Now `hydrate()` maps every
+  column by hand.
+- **`vitest.config.ts` needed `fileParallelism: false` restored.** The
+  Stage 1 rewrite of this file dropped it; several test files share one real
+  Postgres database (there's no per-file sandbox), so parallel files let one
+  file's `afterEach` cleanup race another file's assertions — this produced
+  confusing, file-order-dependent failures until traced back to this.
+- **The dashboard now has the spec's actual input surface**: one field (an
+  Instagram handle), no password, no OAuth — `components/scan-form.tsx`
+  POSTs to `/api/scan`.
+
+---
+
 ## Deviations from the spec
 
 - **`eslint-config-next` ships a native flat-config export** in the
@@ -90,17 +139,18 @@ description says: schema, jobs infrastructure, and the keepalive cron.
   `FlatCompat` shim (the documented approach for older Next versions)
   throws `Converting circular structure to JSON` against this version, so
   `eslint.config.mjs` imports the flat exports directly instead.
-- **Job `checkpoint`/`progress` plumbing exists but nothing exercises it
-  yet.** The `noop` handler and `runTick()`'s time budget are typechecked
-  and manually smoke-tested (see above), but real checkpoint/resume
-  behavior — the actual reason this table exists — only gets a real test
-  once Stage 2 registers a handler that can plausibly run past a function's
-  time budget.
+- **`checkpoint`/`waiting` is exercised by the webhook test, but only with a
+  mocked Apify client.** `markWaiting()` → `claimNext()` correctly excludes
+  the job → `resume()` puts it back is unit-tested (`tests/jobs-queue.test.ts`).
+  The full round trip against a real Apify actor run and a real inbound
+  webhook POST is not — see "Not yet exercised against reality" below.
 - **No handler is registered for most `JobType`s yet.** `lib/jobs/registry.ts`
   and `lib/jobs/types.ts` declare the full job-type surface up front (so the
-  schema doesn't reshape later), but only `noop` has an implementation.
-  `runTick()` will `fail()` any other type permanently right now — expected
-  until each stage adds its handler.
+  schema doesn't reshape later); `noop` and `scan_account` are implemented as
+  of Stage 2. `runTick()` will `fail()` any other type permanently right now
+  — expected until each stage adds its handler. `compute_features` is
+  enqueued at the end of every scan but has no handler yet, so it sits
+  `pending` until Stage 4 registers one — by design, not a bug.
 
 ---
 
@@ -114,6 +164,12 @@ description says: schema, jobs infrastructure, and the keepalive cron.
 - **Vercel Cron.** `vercel.json`'s schedule and the `CRON_SECRET` header
   contract are per Vercel's documented behavior, not yet deployed and
   observed.
-- **Apify, Gemini.** No live call to either yet — Stage 2 (scan pipeline)
-  and Stage 4 (analysis engine) are fixture-first per the spec, and neither
-  has started.
+- **A real Apify actor call.** The `start()`/`fetchRun()` input and webhook
+  shape (`username`, `resultsType`, `resultsLimit`, the `webhooks` array
+  format) are best-effort from Apify's documented client API, not verified
+  against a real actor run — no `APIFY_TOKEN` exists for this build yet.
+  `posts.raw` keeps the untouched payload precisely so re-normalisation after
+  drift costs nothing. The webhook _receiver_ is tested (mocked client), but
+  the actual webhook _delivery_ from Apify to a deployed `/api/webhooks/apify`
+  is not — that needs a real public deployment to observe.
+- **Gemini.** No live call yet — Stage 4 (analysis engine) hasn't started.

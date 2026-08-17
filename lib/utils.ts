@@ -16,9 +16,9 @@ export function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-export function formatRelative(epochSeconds: number | null | undefined): string {
-  if (!epochSeconds) return 'never';
-  const delta = Math.floor(Date.now() / 1000) - epochSeconds;
+export function formatRelative(date: Date | null | undefined): string {
+  if (!date) return 'never';
+  const delta = Math.floor((Date.now() - date.getTime()) / 1000);
   if (delta < 60) return `${delta}s ago`;
   if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
   if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;

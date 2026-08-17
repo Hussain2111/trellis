@@ -60,6 +60,14 @@ export class JobPermanentError extends Error {}
 /** Thrown by a handler to hand control back without spending a retry — e.g. still waiting on Apify. */
 export class JobYield extends Error {}
 
+/**
+ * Thrown by a handler that has already put the job in `waiting` status itself
+ * (via `markWaiting`) before returning control — e.g. it fired an Apify actor
+ * run and is now waiting on that run's webhook. The runner must not also call
+ * `complete()` or `fail()` in this case; the webhook (or a future poll) does.
+ */
+export class JobWaiting extends Error {}
+
 export interface JobContext<T extends JobType = JobType> {
   jobId: number;
   type: T;

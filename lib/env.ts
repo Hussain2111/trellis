@@ -19,6 +19,11 @@ export const envSchema = z.object({
   // --- Database (Supabase Postgres) ----------------------------------------
   DATABASE_URL: z.string().min(1).default('postgres://postgres:postgres@localhost:5432/trellis'),
 
+  // --- Deployment ---------------------------------------------------------
+  // Base URL Apify's webhook calls back to. Falls back to Vercel's own
+  // VERCEL_URL system variable in production; only set this to override it.
+  APP_URL: z.string().optional(),
+
   // --- Model provider (Gemini free tier — the only LLM tier) ---------------
   LLM_PROVIDER: z.enum(['google', 'fake']).default('google'),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),

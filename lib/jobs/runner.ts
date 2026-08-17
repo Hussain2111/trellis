@@ -10,7 +10,14 @@ import {
   requeue,
   saveProgress,
 } from './queue';
-import { JobPermanentError, JobYield, parsePayload, type JobContext, type JobType } from './types';
+import {
+  JobPermanentError,
+  JobWaiting,
+  JobYield,
+  parsePayload,
+  type JobContext,
+  type JobType,
+} from './types';
 
 export interface TickResult {
   processed: number;
@@ -69,7 +76,10 @@ async function runOne(job: Job, deadline: number, remainingMs: number): Promise<
     await handler(ctx);
     await complete(job.id);
   } catch (error) {
-    if (error instanceof JobYield) {
+    if (error instanceof JobWaiting) {
+      // The handler already moved the job to `waiting` via markWaiting() —
+      // nothing more to do here. A webhook (or a future poll) resumes it.
+    } else if (error instanceof JobYield) {
       await requeue(job.id, 5);
     } else if (error instanceof JobPermanentError) {
       await fail(job, error, true);

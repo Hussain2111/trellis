@@ -1,16 +1,20 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { accounts, jobs, posts } from '@/lib/db/schema';
+import { jobs, posts } from '@/lib/db/schema';
+import { selfAccount } from '@/lib/ingest/upsert';
 import { Badge, Empty, Panel, PanelHeader, Stat } from '@/components/ui/primitives';
+import { ScanForm } from '@/components/scan-form';
+import { formatNumber } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage(): Promise<React.JSX.Element> {
-  const accountRows = await db().execute<{ n: number }>(
-    sql`select count(*)::int as n from ${accounts}`,
-  );
-  const postRows = await db().execute<{ n: number }>(sql`select count(*)::int as n from ${posts}`);
-  const accountCount = accountRows[0]?.n ?? 0;
+  const self = await selfAccount();
+  const postRows = self
+    ? await db().execute<{ n: number }>(
+        sql`select count(*)::int as n from ${posts} where account_id = ${self.id}`,
+      )
+    : [{ n: 0 }];
   const postCount = postRows[0]?.n ?? 0;
   const recentJobs = await db()
     .select()
@@ -22,22 +26,35 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
     <div className="mx-auto max-w-5xl px-6 py-6">
       <header className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-[20px] leading-tight font-semibold">No account configured yet</h1>
+          <h1 className="text-[20px] leading-tight font-semibold">
+            {self ? `@${self.handle}` : 'No account configured yet'}
+          </h1>
           <p className="mt-1 text-[13px] text-ink-muted">
-            Stage 1 foundation — schema, jobs infra, and the keepalive cron are live. The scan
-            pipeline, analysis, drafts, and chat land in the stages that follow.
+            {self
+              ? `${formatNumber(self.followers)} followers · ${formatNumber(postCount)} posts held`
+              : 'Enter your Instagram handle to scan your last 100 posts.'}
           </p>
         </div>
-        <Badge tone="signal">stage 1 / 8</Badge>
+        <div className="flex items-center gap-3">
+          <ScanForm />
+          <Badge tone="signal">stage 2 / 8</Badge>
+        </div>
       </header>
 
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <Panel>
-          <PanelHeader title="Database" />
-          <div className="grid grid-cols-2 divide-x divide-line">
-            <Stat label="Accounts" value={accountCount} />
-            <Stat label="Posts" value={postCount} />
-          </div>
+          <PanelHeader title="Account" />
+          {self ? (
+            <div className="grid grid-cols-2 divide-x divide-line">
+              <Stat label="Posts held" value={formatNumber(postCount)} />
+              <Stat label="Followers" value={formatNumber(self.followers)} />
+            </div>
+          ) : (
+            <Empty
+              title="Nothing scanned yet."
+              detail="One field, no password, no OAuth — enter a handle above to start."
+            />
+          )}
         </Panel>
 
         <Panel>
@@ -60,7 +77,9 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
                         ? 'good'
                         : job.status === 'failed'
                           ? 'bad'
-                          : job.status === 'running' || job.status === 'claimed'
+                          : job.status === 'running' ||
+                              job.status === 'claimed' ||
+                              job.status === 'waiting'
                             ? 'signal'
                             : 'neutral'
                     }
