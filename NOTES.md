@@ -286,6 +286,60 @@ this stage is considered done." It does — see below.
 
 ---
 
+## Stage 5 — draft generation, verified
+
+- **Voice profile** (`lib/analysis/voice.ts`, ported to async Postgres):
+  one Gemini call over the self account's best-performing captions
+  (`topCaptionsForVoice`, likes-ranked, >40 chars so junk/empty captions
+  don't dilute it). Versions are never overwritten — `saveVoice()`
+  deactivates the previous version rather than replacing it, so a
+  regeneration you dislike is a revert, not a loss (tested).
+- **Format mix matches the account's own proportions**, per the spec
+  exactly: `lib/analysis/format-mix.ts`'s `formatMix()` scales the
+  account's reel/carousel/image split to the requested batch size using
+  largest-remainder rounding — the only rounding method that both matches
+  proportions closely _and_ guarantees the output sums to exactly the
+  requested count (12) every time, which naive per-format `Math.round()`
+  does not (it can over- or under-shoot the total). `video`/`unknown` post
+  types fold into `image`, since the draft schema only has three formats.
+- **Every draft is tied to exactly one of the analysis's 5 patterns**
+  (`pattern_index`), closing the gap analysis identified — matches "12
+  drafts/week aimed at closing the biggest identified gap." The prompt
+  (`lib/prompts/draft-generation.v1.ts`, carried over from the legacy
+  build's design) generates in batches of 4 rather than 12-at-once, since
+  smaller structured outputs fail schema validation far less often and
+  every retry spends quota.
+- **Draft evidence is filtered, not trusted.** A draft's `evidence` (post
+  ids the model claims support it) is intersected against posts that
+  actually exist before storage — a hallucinated id never reaches the
+  database. `pattern_index` is clamped to the analysis's actual pattern
+  count for the same reason: the schema only bounds it to 0-4 in general,
+  not to how many patterns _this_ analysis has.
+- **The full automatic chain** (`run_analysis` → `build_voice_profile` →
+  `generate_drafts`) is driven through the real job queue in
+  `tests/draft-job-chain.test.ts`, the same discipline as Stage 4's chain
+  test. One real bug surfaced only by testing the chain end-to-end rather
+  than each handler in isolation: the debugging session (a throwaway
+  `scripts/debug-chain.ts`, since deleted) revealed `build_voice_profile`
+  silently yielding for 30 seconds per attempt because the test fixture's
+  captions were under the 40-character floor `topCaptionsForVoice` filters
+  on — not a code bug, but exactly the kind of silent stall the spec warns
+  the job pipeline is prone to, caught by asserting on wall-clock-bounded
+  test behavior rather than trusting a single `runTick()` call to finish
+  everything.
+- **Not independently re-verified against a live dev server for this
+  stage.** Stage 4's live run already proved the scan → features → hooks →
+  analysis half of the chain against a real Postgres; reaching
+  `generate_drafts` live would need at least one competitor account with
+  real fixture data (the discovered competitors from Stage 3's live run
+  have none), which the automated `tests/draft-job-chain.test.ts` already
+  covers by seeding real competitor posts and driving the _entire_ chain
+  through the actual queue — building six more competitor fixtures for one
+  redundant manual check wasn't worth it. Nothing here is asserted without
+  having actually run.
+
+---
+
 ## Deviations from the spec
 
 - **The 5 pattern dimensions and the fixed 10-category hook taxonomy are

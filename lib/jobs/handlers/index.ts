@@ -1,7 +1,9 @@
 import { registerHandler } from '../registry';
+import { buildVoiceProfile } from './build-voice-profile';
 import { classifyHooks } from './classify-hooks';
 import { computeFeatures } from './compute-features';
 import { discoverCompetitors } from './discover-competitors';
+import { generateDrafts } from './generate-drafts';
 import { runAnalysis } from './run-analysis';
 import { scanAccount } from './scan';
 import { scanHashtag } from './scan-hashtag';
@@ -22,4 +24,6 @@ export function registerJobHandlers(): void {
   registerHandler('compute_features', computeFeatures);
   registerHandler('classify_hooks', classifyHooks);
   registerHandler('run_analysis', runAnalysis);
+  registerHandler('build_voice_profile', buildVoiceProfile);
+  registerHandler('generate_drafts', generateDrafts);
 }

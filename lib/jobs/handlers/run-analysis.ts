@@ -1,6 +1,7 @@
 import { mineBackCatalog, persistBackCatalog } from '../../analysis/back-catalog';
 import { InsufficientData, runGapAnalysis } from '../../analysis/gap';
 import { selfAccount } from '../../ingest/upsert';
+import { enqueue } from '../queue';
 import { JobPermanentError, JobYield, type JobContext } from '../types';
 
 export async function runAnalysis(ctx: JobContext<'run_analysis'>): Promise<void> {
@@ -30,4 +31,8 @@ export async function runAnalysis(ctx: JobContext<'run_analysis'>): Promise<void
     label: `${result.patterns.length} patterns, gap: ${result.gap.name}`,
     checkpoint: { analysisId: result.id, resurfacedCount: resurfaced.length },
   });
+
+  // Drafts need a voice profile; rebuilding it after every fresh analysis
+  // keeps it current with whatever new captions have come in since the last one.
+  await enqueue('build_voice_profile', { topN: 20 }, { dedupe: true });
 }
