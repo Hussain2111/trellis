@@ -80,7 +80,7 @@ async function runOne(job: Job, deadline: number, remainingMs: number): Promise<
       // The handler already moved the job to `waiting` via markWaiting() —
       // nothing more to do here. A webhook (or a future poll) resumes it.
     } else if (error instanceof JobYield) {
-      await requeue(job.id, 5);
+      await requeue(job.id, error.delaySeconds);
     } else if (error instanceof JobPermanentError) {
       await fail(job, error, true);
     } else {

@@ -55,12 +55,14 @@ export class ApifyScraper implements ScraperProvider {
   readonly costNote = DESCRIPTOR.costNote;
   private readonly client: ApifyClient;
   private readonly actor: string;
+  private readonly hashtagActor: string;
   private readonly monthlyAllowanceUsd: number;
   private readonly webhookSecret: string | undefined;
 
   constructor(options: {
     token: string;
     actor: string;
+    hashtagActor?: string;
     monthlyAllowanceUsd: number;
     webhookSecret?: string | undefined;
   }) {
@@ -70,6 +72,7 @@ export class ApifyScraper implements ScraperProvider {
     }
     this.client = new ApifyClient({ token: options.token });
     this.actor = options.actor;
+    this.hashtagActor = options.hashtagActor ?? options.actor;
     this.monthlyAllowanceUsd = options.monthlyAllowanceUsd;
     this.webhookSecret = options.webhookSecret;
   }
@@ -122,6 +125,36 @@ export class ApifyScraper implements ScraperProvider {
         resultsType: 'posts',
         resultsLimit: request.limit,
       },
+      {
+        webhooks: [
+          {
+            eventTypes: [
+              'ACTOR.RUN.SUCCEEDED',
+              'ACTOR.RUN.FAILED',
+              'ACTOR.RUN.ABORTED',
+              'ACTOR.RUN.TIMED_OUT',
+            ],
+            requestUrl: webhookUrl,
+          },
+        ],
+      },
+    );
+
+    return { runId: run.id, datasetId: run.defaultDatasetId };
+  }
+
+  /**
+   * Fires the hashtag-scraper actor for one hashtag. Same fire-and-return
+   * shape as `start()` — used by competitor discovery, which scans several
+   * hashtags per account and cannot afford to block on any of them.
+   */
+  async startHashtag(hashtag: string, limit: number): Promise<StartedRun> {
+    const webhookUrl = this.webhookSecret
+      ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
+      : `${appUrl()}/api/webhooks/apify`;
+
+    const run = await this.client.actor(this.hashtagActor).start(
+      { hashtags: [hashtag], resultsLimit: limit },
       {
         webhooks: [
           {

@@ -1,0 +1,7 @@
+[
+  { "ownerUsername": "bigcreator", "likesCount": 12000, "commentsCount": 400 },
+  { "ownerUsername": "bigcreator", "likesCount": 9000, "commentsCount": 300 },
+  { "ownerUsername": "midcreator", "likesCount": 3000, "commentsCount": 90 },
+  { "ownerUsername": "testaccount", "likesCount": 5000, "commentsCount": 120 },
+  { "ownerUsername": "smallcreator", "likesCount": 400, "commentsCount": 10 }
+]

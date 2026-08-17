@@ -38,6 +38,7 @@ export const envSchema = z.object({
   // --- Scraping (Apify) -------------------------------------------------------
   APIFY_TOKEN: z.string().optional(),
   APIFY_ACTOR: z.string().default('apify/instagram-profile-scraper'),
+  APIFY_HASHTAG_ACTOR: z.string().default('apify/instagram-hashtag-scraper'),
   // live = spend Apify credits. fixture = replay ./fixtures offline, zero cost.
   SCRAPE_MODE: z.enum(['live', 'fixture', 'fake']).default('fixture'),
   APIFY_MONTHLY_CREDIT_USD: z.coerce.number().nonnegative().default(5),

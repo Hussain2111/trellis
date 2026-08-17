@@ -18,6 +18,10 @@ export const jobPayloads = {
   discover_competitors: z.object({
     accountId: z.number().int(),
   }),
+  scan_hashtag: z.object({
+    hashtag: z.string().min(1),
+    limit: z.number().int().positive().default(30),
+  }),
   compute_features: z.object({
     accountId: z.number().int().optional(),
   }),
@@ -57,8 +61,14 @@ export function parsePayload<T extends JobType>(type: T, payload: unknown): JobP
 
 export class JobPermanentError extends Error {}
 
-/** Thrown by a handler to hand control back without spending a retry — e.g. still waiting on Apify. */
-export class JobYield extends Error {}
+/** Thrown by a handler to hand control back without spending a retry — e.g. still polling for child jobs. */
+export class JobYield extends Error {
+  readonly delaySeconds: number;
+  constructor(message = 'yielded', delaySeconds = 5) {
+    super(message);
+    this.delaySeconds = delaySeconds;
+  }
+}
 
 /**
  * Thrown by a handler that has already put the job in `waiting` status itself

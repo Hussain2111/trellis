@@ -131,6 +131,73 @@ silently returning a`Job`whose`maxAttempts`was`undefined`, which made
 
 ---
 
+## Stage 3 — competitor/niche discovery, verified
+
+- **Niche inference is one Gemini call** (`lib/analysis/niche.ts`) over the
+  self account's bio, up to 50 recent captions, and its top 8 hashtags —
+  matches the spec's "single model call" requirement exactly. Goes through
+  the same `complete()`/quota/repair-on-malformed-JSON path everything else
+  will use in Stage 4.
+- **Hashtag discovery is deterministic** (`lib/analysis/hashtags.ts`,
+  `topHashtags`/`rankAccountsByEngagement`) — no model involved in deciding
+  which hashtags matter or which accounts dominate them, matching "scraping
+  the account's most-used hashtags and ranking the accounts that dominate
+  those hashtags by engagement." Engagement score weights comments 3x likes
+  (a comment costs more effort than a like — a reasonable, documented,
+  entirely swappable heuristic, not a spec requirement).
+- **`discover_competitors` polls its own children rather than blocking.**
+  It enqueues one `scan_hashtag` job per top hashtag (priority 10, vs. its
+  own priority 0, so children are always claimed first within a tick), then
+  throws `JobYield` to hand control back. On resumption it checks whether
+  all children have reached `done`/`failed`; if not, it yields again. This
+  is the same non-blocking shape as the Stage 2 scan, generalized to a
+  fan-out/fan-in rather than a single external wait. `JobYield` gained an
+  optional `delaySeconds` (default 5) to support this — the parent yields
+  with `delaySeconds: 0` on its first pass, which is safe specifically
+  _because_ of the priority ordering, not despite it.
+- **`scan_hashtag` reuses the exact fire-and-webhook shape from Stage 2**
+  (`ApifyScraper.startHashtag()`, generalized `/api/webhooks/apify` that now
+  looks up the waiting job by type _and_ checkpoint `runId` rather than
+  assuming `scan_account`) — deliberately not a second parallel mechanism.
+- **Two more real bugs, both only caught by testing against a real
+  database with realistic multi-entity data** (a single-account test
+  wouldn't have caught either): `enqueue(..., {dedupe:true})` matched on job
+  _type_ only, so enqueueing four `scan_account` jobs for four different
+  discovered competitors silently dropped three of them — the second call
+  found "an unfinished job of this type" (the first competitor's) and
+  skipped. Fixed to match on type _and_ payload (`tests/jobs-queue.test.ts`
+  now asserts both: same-type-same-payload dedupes, same-type-different-
+  payload does not). And `quota_budget` rows were never cleared between
+  test files, so repeated local `vitest run`s within the same calendar day
+  accumulated real consumption against the self-imposed daily allowance
+  until a later test file's LLM call legitimately hit `QuotaExhausted` —
+  not a code bug, but a real testing-hygiene gap; `niche.test.ts` and
+  `discover-competitors.test.ts` now clear `quota_budget` in `afterEach`.
+- **Full pipeline verified against a real dev server + real Postgres**, not
+  just tests: scanned `@testaccount` (`fixtures/testaccount.json`, whose top
+  hashtags are `#reels #photography #advice #bts #dmfunnel` — five new
+  hashtag fixtures were added to back this, distinct from the
+  `hashtag-niche1`/`niche2` fixtures the unit tests use). Confirmed in
+  psql: niche was written to the account row, all 5 hashtag scans completed,
+  6 competitors were discovered and correctly tagged with
+  `discovered_via_hashtag`, `testaccount` itself was correctly excluded from
+  its own discovery results despite appearing in the `#reels` hashtag
+  fixture data, and a `scan_account` job was chained for each competitor
+  (which then correctly and honestly fail — fixture mode refuses to
+  fabricate data for a handle it has no captured fixture for, which is by
+  design, not a bug: a real deployment would either have a live Apify token
+  or would need each new competitor's fixture captured once).
+- **Added `/api/jobs/tick`** (`CRON_SECRET`-gated, like the keepalive route):
+  advances the queue by one time-boxed tick regardless of job type. This is
+  the general "short invocation" half of the fire-and-return pattern the
+  spec calls for — `/api/scan` only ticks `scan_account` types for a fast
+  first response, so something has to advance the `discover_competitors` →
+  `scan_hashtag` → competitor `scan_account` chain afterward. In production
+  this would be polled by the dashboard while a job is active, or hung off
+  a cron schedule.
+
+---
+
 ## Deviations from the spec
 
 - **`eslint-config-next` ships a native flat-config export** in the
@@ -164,12 +231,17 @@ silently returning a`Job`whose`maxAttempts`was`undefined`, which made
 - **Vercel Cron.** `vercel.json`'s schedule and the `CRON_SECRET` header
   contract are per Vercel's documented behavior, not yet deployed and
   observed.
-- **A real Apify actor call.** The `start()`/`fetchRun()` input and webhook
-  shape (`username`, `resultsType`, `resultsLimit`, the `webhooks` array
-  format) are best-effort from Apify's documented client API, not verified
+- **A real Apify actor call**, for both the profile-posts actor and the
+  hashtag actor (`startHashtag()`, `APIFY_HASHTAG_ACTOR`). Input/webhook
+  shapes are best-effort from Apify's documented client API, not verified
   against a real actor run — no `APIFY_TOKEN` exists for this build yet.
   `posts.raw` keeps the untouched payload precisely so re-normalisation after
   drift costs nothing. The webhook _receiver_ is tested (mocked client), but
   the actual webhook _delivery_ from Apify to a deployed `/api/webhooks/apify`
-  is not — that needs a real public deployment to observe.
-- **Gemini.** No live call yet — Stage 4 (analysis engine) hasn't started.
+  is not — that needs a real public deployment to observe. In particular,
+  whether `apify/instagram-hashtag-scraper` (or whatever hashtag actor ends
+  up configured) accepts a bare `hashtags: [tag]` input the way assumed here
+  is unverified.
+- **Gemini.** No live call yet — `GoogleLlm` is written and typechecked
+  (`lib/providers/llm/google.ts`) but every test in Stage 3 runs against
+  `FakeLlm`; no `GOOGLE_GENERATIVE_AI_API_KEY` exists for this build yet.

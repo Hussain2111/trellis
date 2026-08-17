@@ -26,6 +26,9 @@ export async function enqueue<T extends JobType>(
   const validated = parsePayload(type, payload);
 
   if (options.dedupe) {
+    // Matches on type AND payload — two scan_account jobs for different
+    // accountIds are not duplicates of each other, only an identical retrigger
+    // of the same work is.
     const [existing] = await db()
       .select({ id: jobs.id })
       .from(jobs)
@@ -33,6 +36,7 @@ export async function enqueue<T extends JobType>(
         and(
           eq(jobs.type, type),
           inArray(jobs.status, ['pending', 'claimed', 'running', 'waiting']),
+          sql`${jobs.payload} = ${JSON.stringify(validated)}::jsonb`,
         ),
       )
       .limit(1);

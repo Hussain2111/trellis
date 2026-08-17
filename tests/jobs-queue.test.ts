@@ -32,11 +32,19 @@ describe('enqueue', () => {
     await expect(enqueue('scan_account', { accountId: 'nope' })).rejects.toThrow();
   });
 
-  it('dedupes against an unfinished job of the same type when asked', async () => {
+  it('dedupes against an unfinished job with the same type and payload', async () => {
+    const first = await enqueue('scan_account', { accountId: 1 }, { dedupe: true });
+    const second = await enqueue('scan_account', { accountId: 1 }, { dedupe: true });
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+  });
+
+  it('does not dedupe jobs of the same type with different payloads', async () => {
     const first = await enqueue('scan_account', { accountId: 1 }, { dedupe: true });
     const second = await enqueue('scan_account', { accountId: 2 }, { dedupe: true });
     expect(first).not.toBeNull();
-    expect(second).toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
   });
 });
 

@@ -171,3 +171,31 @@ export function normalizeDataset(
 
   return { profile, posts };
 }
+
+export interface HashtagPost {
+  username: string;
+  likes: number;
+  comments: number;
+}
+
+/**
+ * Hashtag-scraper actors return post rows with the owning account's username
+ * inline rather than a nested profile — much lighter than a full post
+ * normalization, since all discovery needs is "who posted this and how well
+ * did it do".
+ */
+export function normalizeHashtagItems(items: unknown[]): HashtagPost[] {
+  const out: HashtagPost[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Row;
+    const username = str(pick(row, ['ownerUsername', 'username', 'owner_username']));
+    if (!username) continue;
+    out.push({
+      username,
+      likes: num(pick(row, ['likesCount', 'likes', 'like_count'])) ?? 0,
+      comments: num(pick(row, ['commentsCount', 'comments', 'comment_count'])) ?? 0,
+    });
+  }
+  return out;
+}

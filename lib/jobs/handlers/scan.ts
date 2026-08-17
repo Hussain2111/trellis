@@ -82,5 +82,13 @@ export async function applyScanResult(
   // Features are cheap, deterministic and always wanted after a scan.
   await enqueue('compute_features', { accountId }, { dedupe: false });
 
+  // Competitor/niche discovery is automatic, but only chains off the self
+  // account's scan — discovering competitors of a competitor isn't a feature
+  // Growy exposes, and it would recurse indefinitely otherwise.
+  const account = await getAccount(accountId);
+  if (account?.role === 'self') {
+    await enqueue('discover_competitors', { accountId }, { dedupe: true });
+  }
+
   return summary;
 }

@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { jobs } from '@/lib/db/schema';
 import { env } from '@/lib/env';
@@ -6,9 +6,9 @@ import { getAccount } from '@/lib/ingest/upsert';
 import { registerJobHandlers } from '@/lib/jobs/handlers';
 import { applyScanResult } from '@/lib/jobs/handlers/scan';
 import { fail, complete as completeJob } from '@/lib/jobs/queue';
-import { ApifyScraper } from '@/lib/providers/scraper/apify';
 import { getScraper } from '@/lib/providers';
-import { ingestCompletedRun } from '@/lib/providers/scraper/apify';
+import { ApifyScraper, ingestCompletedRun } from '@/lib/providers/scraper/apify';
+import { normalizeHashtagItems } from '@/lib/ingest/normalize';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +18,10 @@ interface ApifyWebhookBody {
 }
 
 /**
- * Apify calls this once the actor run it fired in `scanAccount` finishes.
- * This is the "webhook callback" half of the fire-and-return scan job — see
- * lib/jobs/handlers/scan.ts.
+ * Apify calls this once an actor run it fired finishes — the "webhook
+ * callback" half of every fire-and-return job (scanAccount, scanHashtag).
+ * The job type is looked up rather than assumed, since either kind of scan
+ * can be waiting on a run at any given moment.
  */
 export async function POST(request: Request): Promise<Response> {
   registerJobHandlers();
@@ -50,7 +51,7 @@ export async function POST(request: Request): Promise<Response> {
     .from(jobs)
     .where(
       and(
-        eq(jobs.type, 'scan_account'),
+        inArray(jobs.type, ['scan_account', 'scan_hashtag']),
         eq(jobs.status, 'waiting'),
         sql`${jobs.checkpoint}->>'runId' = ${runId}`,
       ),
@@ -63,26 +64,36 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ ok: true, note: 'no matching waiting job' });
   }
 
-  const checkpoint = job.checkpoint as {
-    runId: string;
-    limit: number;
-    stopAt: string[];
-  };
-  const payload = job.payload as { accountId: number };
-
   try {
+    const scraper = getScraper() as ApifyScraper;
+    const run = await scraper.fetchRun(runId);
+
+    if (job.type === 'scan_hashtag') {
+      const checkpoint = job.checkpoint as { runId: string; hashtag: string };
+      if (!run.succeeded) {
+        await fail(job, new Error(`actor finished ${run.status}`), true);
+        return Response.json({ ok: false, note: `run ${run.status}` });
+      }
+      const results = normalizeHashtagItems(run.items);
+      await db()
+        .update(jobs)
+        .set({ checkpoint: { hashtag: checkpoint.hashtag, results } })
+        .where(eq(jobs.id, job.id));
+      await completeJob(job.id);
+      return Response.json({ ok: true, hashtagPosts: results.length });
+    }
+
+    const checkpoint = job.checkpoint as { runId: string; limit: number; stopAt: string[] };
+    const payload = job.payload as { accountId: number };
     const account = await getAccount(payload.accountId);
     if (!account) throw new Error(`account ${payload.accountId} no longer exists`);
 
-    const scraper = getScraper() as ApifyScraper;
-    const run = await scraper.fetchRun(runId);
     const result = await ingestCompletedRun(
       account.handle,
       run,
       checkpoint.limit,
       new Set(checkpoint.stopAt),
     );
-
     await applyScanResult(account.id, result.profile, result.posts, result.complete, result.note);
 
     if (result.complete) {

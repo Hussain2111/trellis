@@ -2,6 +2,7 @@ import { env } from '../env';
 import { ApifyScraper } from './scraper/apify';
 import { FixtureScraper } from './scraper/fixture';
 import { FakeScraper } from './scraper/fake';
+import { getLlm } from './llm';
 import type { ScraperProvider } from './scraper/types';
 import type { ProviderDescriptor } from './types';
 
@@ -24,6 +25,7 @@ export function getScraper(): ScraperProvider {
       return new ApifyScraper({
         token: e.APIFY_TOKEN ?? '',
         actor: e.APIFY_ACTOR,
+        hashtagActor: e.APIFY_HASHTAG_ACTOR,
         monthlyAllowanceUsd: e.APIFY_MONTHLY_CREDIT_USD,
         webhookSecret: e.APIFY_WEBHOOK_SECRET,
       });
@@ -43,6 +45,11 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
       describe(
         safe(() => getScraper()),
         'Scraping',
+      ),
+    async () =>
+      describe(
+        safe(() => getLlm()),
+        'Model',
       ),
   ];
   return Promise.all(entries.map((fn) => fn()));
