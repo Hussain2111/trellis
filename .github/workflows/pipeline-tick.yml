@@ -1,0 +1,29 @@
+name: Pipeline tick
+
+# Vercel Hobby cron is capped at once a day, no matter how many cron
+# entries you declare — not frequent enough to actually finish a scan's
+# job chain (compute_features -> classify_hooks -> run_analysis ->
+# build_voice_profile -> generate_drafts -> render_slides) in any
+# reasonable time when nobody has the dashboard open to drive the
+# client-side poller. This is the free, unauthenticated workaround: an
+# external scheduler (GitHub Actions, not Vercel's) pinging the same
+# /api/pipeline/tick the dashboard poller already uses, on a real
+# interval, independent of whether a browser tab is open anywhere.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Poke the job queue
+        run: |
+          if [ -z "${{ vars.TRELLIS_URL }}" ]; then
+            echo "TRELLIS_URL repo variable is not set — see Settings > Secrets and variables > Actions > Variables."
+            exit 0
+          fi
+          curl -sf -X POST "${{ vars.TRELLIS_URL }}/api/pipeline/tick" || echo "tick request failed (non-fatal, will retry in 10 min)"

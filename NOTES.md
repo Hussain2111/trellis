@@ -702,6 +702,21 @@ real external system rather than this codebase's own logic:
   hours." Also dropped the `stage 2 / 8` badge that had been hardcoded on
   the dashboard since Stage 1 verification — stale now that all 8 stages
   are built and deployed.
+- **The client-side poller alone wasn't enough — a scan left overnight
+  with no browser tab open sat stalled for 11 hours** on jobs
+  (`compute_features`, mid-chain) that involve zero network calls and
+  should take milliseconds. `PipelineTickPoller` only runs while the
+  dashboard is actually open in a tab; nothing server-side was advancing
+  the queue in the gap, and Vercel Hobby cron's once-a-day ceiling can't
+  close that gap either — it's a hard cap per cron entry, not a count
+  limit you can work around with more entries. Fixed with an external,
+  Vercel-independent scheduler: `.github/workflows/pipeline-tick.yml`
+  pings the same unauthenticated `/api/pipeline/tick` every 10 minutes via
+  GitHub Actions' own cron, which isn't subject to Vercel's limit at all.
+  Requires a `TRELLIS_URL` repo variable (Settings → Secrets and variables
+  → Actions → Variables) pointing at the project's stable Production
+  domain — not a per-deployment preview-style URL, which changes on every
+  deploy and would silently break this.
 
 ## Not yet exercised against reality
 
