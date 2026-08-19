@@ -63,8 +63,6 @@ export default async function SettingsPage(): Promise<React.JSX.Element> {
             </Badge>
             <span className="label">SCRAPE_MODE</span>
             <Badge tone={e.SCRAPE_MODE === 'live' ? 'signal' : 'neutral'}>{e.SCRAPE_MODE}</Badge>
-            <span className="label">IMAGE_PROVIDER</span>
-            <Badge tone="neutral">{e.IMAGE_PROVIDER}</Badge>
           </div>
         </Panel>
       </div>
@@ -79,8 +77,6 @@ export default async function SettingsPage(): Promise<React.JSX.Element> {
             </span>
             <span className="label">Scraper</span>
             <span className="font-mono">apify ({e.APIFY_ACTOR})</span>
-            <span className="label">Images</span>
-            <span className="font-mono">{e.IMAGE_PROVIDER}</span>
           </div>
         </Panel>
 
@@ -89,7 +85,7 @@ export default async function SettingsPage(): Promise<React.JSX.Element> {
           <div className="px-4 py-3 text-[12px]">
             {!e.ENABLE_IG_PUBLISHING ? (
               <p className="text-ink-muted">
-                Disabled. Scheduled drafts wait for you to post them by hand — see{' '}
+                Disabled. Calendar entries wait for you to post them by hand — see{' '}
                 <span className="font-mono">docs/instagram-setup.md</span>.
               </p>
             ) : tokenCheck ? (

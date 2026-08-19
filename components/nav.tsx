@@ -4,14 +4,16 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
-/** The cockpit. Ordered by how the pipeline actually runs, not alphabetically. */
+/**
+ * The cockpit. Ordered by how the pipeline actually runs, not alphabetically.
+ *
+ * `/posts` is dormant in v2, not deleted: the route still renders the scraped
+ * back catalogue, but it is off the nav until the Graph-API-sourced Post
+ * Analytics view replaces it. Gap, Voice and Drafts are gone outright.
+ */
 const ROUTES: { href: string; label: string }[] = [
   { href: '/', label: 'Dashboard' },
-  { href: '/posts', label: 'Posts' },
   { href: '/competitors', label: 'Competitors' },
-  { href: '/gap', label: 'Gap' },
-  { href: '/voice', label: 'Voice' },
-  { href: '/drafts', label: 'Drafts' },
   { href: '/calendar', label: 'Calendar' },
   { href: '/chat', label: 'Chat' },
   { href: '/settings', label: 'Settings' },

@@ -34,10 +34,6 @@ export interface Pattern {
   mySampleSize: number;
 }
 
-export interface Gap extends Pattern {
-  claim: string;
-}
-
 const HOUR_BUCKETS: [number, number, string][] = [
   [6, 10, 'morning (6–10)'],
   [10, 14, 'midday (10–14)'],
@@ -193,9 +189,4 @@ export function computePatterns(corpus: EnrichedPost[]): Pattern[] {
   );
 
   return candidates.sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct)).slice(0, 5);
-}
-
-/** The single biggest gap — the pattern with the largest delta, per the spec. */
-export function biggestGap(patterns: Pattern[]): Pattern | null {
-  return patterns[0] ?? null;
 }

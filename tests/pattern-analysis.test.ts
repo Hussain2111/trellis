@@ -11,7 +11,7 @@ import {
   quotaBudget,
 } from '../lib/db/schema';
 import { persistFeatures } from '../lib/analysis/features';
-import { InsufficientData, runGapAnalysis } from '../lib/analysis/gap';
+import { InsufficientData, runPatternAnalysis } from '../lib/analysis/analysis';
 import { reconcilePatterns } from '../lib/analysis/reconcile';
 import { loadCorpus } from '../lib/analysis/corpus';
 import { upsertAccount, upsertPosts } from '../lib/ingest/upsert';
@@ -92,10 +92,10 @@ async function labelAllHooks(accountId: number, category: string) {
   }
 }
 
-describe('runGapAnalysis', () => {
+describe('runPatternAnalysis', () => {
   it('throws InsufficientData with no competitor posts', async () => {
     await seedAccount('soloself', 'self', 1000, 5, 100);
-    await expect(runGapAnalysis(30)).rejects.toThrow(InsufficientData);
+    await expect(runPatternAnalysis(30)).rejects.toThrow(InsufficientData);
   });
 
   it('computes patterns, passes reconciliation, and persists the analysis', async () => {
@@ -104,11 +104,9 @@ describe('runGapAnalysis', () => {
     await labelAllHooks(self.id, 'other');
     await labelAllHooks(competitor.id, 'bold_claim');
 
-    const result = await runGapAnalysis(30);
+    const result = await runPatternAnalysis(30);
 
     expect(result.patterns.length).toBeGreaterThan(0);
-    expect(result.gap).toBeDefined();
-    expect(result.gap.key).toBe(result.patterns[0]?.key);
 
     const corpus = await loadCorpus();
     expect(reconcilePatterns(result.patterns, corpus)).toEqual([]);
@@ -116,6 +114,9 @@ describe('runGapAnalysis', () => {
     const [stored] = await db().select().from(analyses).where(eq(analyses.id, result.id));
     expect(stored).toBeDefined();
     expect((stored!.patterns as unknown[]).length).toBe(result.patterns.length);
+    // v2 stopped writing the single-biggest-gap payload; the column stays
+    // nullable only so v1's historical rows keep their receipts.
+    expect(stored!.gap).toBeNull();
   });
 
   it('uses the LLM claim when it correctly cites both stats', async () => {
@@ -131,7 +132,7 @@ describe('runGapAnalysis', () => {
       }),
     );
 
-    const result = await runGapAnalysis(30);
+    const result = await runPatternAnalysis(30);
     const ctaPattern = result.patterns.find((p) => p.key === 'has_cta')!;
     expect(ctaPattern.claim).toContain('100%');
     expect(ctaPattern.claim).toContain('0%');
@@ -149,7 +150,7 @@ describe('runGapAnalysis', () => {
       }),
     );
 
-    const result = await runGapAnalysis(30);
+    const result = await runPatternAnalysis(30);
     const ctaPattern = result.patterns.find((p) => p.key === 'has_cta')!;
     // The deterministic template always states the exact percentages, even
     // though the model call itself succeeded — only this claim's numbers
@@ -165,7 +166,7 @@ describe('runGapAnalysis', () => {
     fake.queue('not json');
     fake.queue('still not json');
 
-    const result = await runGapAnalysis(30);
+    const result = await runPatternAnalysis(30);
     expect(result.patterns.every((p) => p.claim.length > 0)).toBe(true);
   });
 });

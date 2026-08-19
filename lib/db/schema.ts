@@ -156,8 +156,13 @@ export const analyses = pgTable(
     windowDays: integer('window_days').notNull(),
     /** Pattern[] — each { name, description, nicheStat, myStat, delta, postIds[] }. */
     patterns: jsonb('patterns').notNull(),
-    /** { claim, nicheStat, myStat, delta, postIds[] } — the single biggest gap. */
-    gap: jsonb('gap').notNull(),
+    /**
+     * v1's single-biggest-gap payload. The Gap tab is gone and nothing writes
+     * this any more, but the column stays nullable rather than dropped so the
+     * historical analyses keep their receipts. v2 stores Opportunities output
+     * in `patterns`.
+     */
+    gap: jsonb('gap'),
     inputsHash: text('inputs_hash').notNull(),
     generatedBy: text('generated_by').notNull(),
   },
@@ -186,93 +191,52 @@ export const resurfacedPosts = pgTable(
   (t) => [index('resurfaced_posts_post_idx').on(t.postId)],
 );
 
-// --- voice_profile -------------------------------------------------------------
+// --- calendar_entries (hand-written plan + the Graph API publish queue) ------
 
-export const voiceProfile = pgTable(
-  'voice_profile',
+/**
+ * Replaces v1's `drafts` + `schedule` pair. Content lives inline here rather
+ * than behind a foreign key: v2 has no LLM draft generation, so an entry is
+ * something the user typed, not a row pointing at a generated artefact.
+ *
+ * `status` stores only the states the publisher actually writes. `due` and
+ * `overdue` are *derived* from `scheduledFor` against Riyadh-local now (see
+ * `lib/time.ts`) and are deliberately not stored — a stored `due` would go
+ * stale the moment the clock passed it with nothing running.
+ */
+export const calendarEntries = pgTable(
+  'calendar_entries',
   {
     id: serial('id').primaryKey(),
-    version: integer('version').notNull(),
-    markdown: text('markdown').notNull(),
-    fields: jsonb('fields').notNull(),
-    active: boolean('active').notNull().default(true),
-    generatedBy: text('generated_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [uniqueIndex('voice_profile_version_uq').on(t.version)],
-);
-
-// --- drafts ----------------------------------------------------------------
-
-export const drafts = pgTable(
-  'drafts',
-  {
-    id: serial('id').primaryKey(),
-    analysisId: integer('analysis_id').references(() => analyses.id, { onDelete: 'set null' }),
-    format: text('format', { enum: ['carousel', 'reel', 'image'] }).notNull(),
-    patternIndex: integer('pattern_index'),
-    title: text('title').notNull(),
-    hook: text('hook').notNull(),
-    /** Carousel body: { headline, slides: [{text}], cta }. */
-    body: jsonb('body').notNull(),
-    caption: text('caption').notNull(),
-    hashtags: jsonb('hashtags').$type<string[]>().notNull(),
-    cta: text('cta'),
-    rationale: text('rationale'),
-    evidence: jsonb('evidence').$type<number[]>(),
-    status: text('status', { enum: ['draft', 'approved', 'scheduled', 'published', 'discarded'] })
-      .notNull()
-      .default('draft'),
-    generatedBy: text('generated_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [index('drafts_status_idx').on(t.status), index('drafts_analysis_idx').on(t.analysisId)],
-);
-
-// --- draft_assets (slide PNGs, stored in Supabase Storage) -------------------
-
-export const draftAssets = pgTable(
-  'draft_assets',
-  {
-    id: serial('id').primaryKey(),
-    draftId: integer('draft_id')
-      .notNull()
-      .references(() => drafts.id, { onDelete: 'cascade' }),
-    kind: text('kind', { enum: ['slide', 'background', 'cover'] }).notNull(),
-    slideIndex: integer('slide_index'),
-    /** Path inside the Supabase Storage bucket. */
-    storagePath: text('storage_path'),
-    publicUrl: text('public_url'),
-    prompt: text('prompt'),
-    provider: text('provider'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [index('draft_assets_draft_idx').on(t.draftId)],
-);
-
-// --- schedule (Graph API publish queue) ---------------------------------------
-
-export const schedule = pgTable(
-  'schedule',
-  {
-    id: serial('id').primaryKey(),
-    draftId: integer('draft_id')
-      .notNull()
-      .references(() => drafts.id, { onDelete: 'cascade' }),
     scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
     status: text('status', {
-      enum: ['pending', 'claimed', 'publishing', 'published', 'failed'],
+      enum: ['planned', 'claimed', 'publishing', 'published', 'failed'],
     })
       .notNull()
-      .default('pending'),
+      .default('planned'),
+    format: text('format', { enum: ['carousel', 'reel', 'image', 'story'] })
+      .notNull()
+      .default('image'),
+    title: text('title').notNull().default(''),
+    hook: text('hook'),
+    caption: text('caption').notNull().default(''),
+    hashtags: jsonb('hashtags')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    notes: text('notes'),
+    /** Publicly reachable image URLs, required only by the auto-publish path. */
+    mediaUrls: jsonb('media_urls')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
     igMediaId: text('ig_media_id'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
   },
-  (t) => [index('schedule_due_idx').on(t.status, t.scheduledFor)],
+  (t) => [index('calendar_entries_due_idx').on(t.status, t.scheduledFor)],
 );
 
 // --- chat --------------------------------------------------------------------
@@ -390,6 +354,5 @@ export type NewJob = typeof jobs.$inferInsert;
 export type Run = typeof runs.$inferSelect;
 export type QuotaBudget = typeof quotaBudget.$inferSelect;
 export type Analysis = typeof analyses.$inferSelect;
-export type Draft = typeof drafts.$inferSelect;
-export type DraftAsset = typeof draftAssets.$inferSelect;
-export type Schedule = typeof schedule.$inferSelect;
+export type CalendarEntry = typeof calendarEntries.$inferSelect;
+export type NewCalendarEntry = typeof calendarEntries.$inferInsert;

@@ -3,9 +3,6 @@ import { ApifyScraper } from './scraper/apify';
 import { FixtureScraper } from './scraper/fixture';
 import { FakeScraper } from './scraper/fake';
 import { getLlm } from './llm';
-import { NoneImageProvider } from './image/none';
-import { PollinationsImageProvider } from './image/pollinations';
-import type { ImageProvider } from './image/types';
 import type { ScraperProvider } from './scraper/types';
 import type { ProviderDescriptor } from './types';
 
@@ -35,12 +32,6 @@ export function getScraper(): ScraperProvider {
   }
 }
 
-export function getImageProvider(): ImageProvider {
-  const e = env();
-  if (e.IMAGE_PROVIDER === 'pollinations') return new PollinationsImageProvider();
-  return new NoneImageProvider();
-}
-
 export interface ProviderStatus extends ProviderDescriptor {
   ok: boolean;
   detail: string;
@@ -59,11 +50,6 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
       describe(
         safe(() => getLlm()),
         'Model',
-      ),
-    async () =>
-      describe(
-        safe(() => getImageProvider()),
-        'Images',
       ),
   ];
   return Promise.all(entries.map((fn) => fn()));

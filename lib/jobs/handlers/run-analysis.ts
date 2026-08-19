@@ -1,18 +1,17 @@
 import { mineBackCatalog, persistBackCatalog } from '../../analysis/back-catalog';
-import { InsufficientData, runGapAnalysis } from '../../analysis/gap';
+import { InsufficientData, runPatternAnalysis } from '../../analysis/analysis';
 import { selfAccount } from '../../ingest/upsert';
-import { enqueue } from '../queue';
 import { JobPermanentError, JobYield, type JobContext } from '../types';
 
 export async function runAnalysis(ctx: JobContext<'run_analysis'>): Promise<void> {
   const self = await selfAccount();
   if (!self) throw new JobPermanentError('no self account configured yet');
 
-  await ctx.save({ progress: 0.2, label: 'computing patterns and gap' });
+  await ctx.save({ progress: 0.2, label: 'computing patterns' });
 
   let result;
   try {
-    result = await runGapAnalysis(ctx.payload.windowDays);
+    result = await runPatternAnalysis(ctx.payload.windowDays);
   } catch (error) {
     if (error instanceof InsufficientData) {
       // Not a failure — there just isn't enough data yet (e.g. hook
@@ -28,11 +27,7 @@ export async function runAnalysis(ctx: JobContext<'run_analysis'>): Promise<void
 
   await ctx.save({
     progress: 1,
-    label: `${result.patterns.length} patterns, gap: ${result.gap.name}`,
+    label: `${result.patterns.length} patterns`,
     checkpoint: { analysisId: result.id, resurfacedCount: resurfaced.length },
   });
-
-  // Drafts need a voice profile; rebuilding it after every fresh analysis
-  // keeps it current with whatever new captions have come in since the last one.
-  await enqueue('build_voice_profile', { topN: 20 }, { dedupe: true });
 }

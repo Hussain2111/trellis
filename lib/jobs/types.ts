@@ -31,16 +31,6 @@ export const jobPayloads = {
   run_analysis: z.object({
     windowDays: z.number().int().positive().default(30),
   }),
-  build_voice_profile: z.object({
-    topN: z.number().int().positive().default(20),
-  }),
-  generate_drafts: z.object({
-    analysisId: z.number().int(),
-    count: z.number().int().positive().default(12),
-  }),
-  render_slides: z.object({
-    draftId: z.number().int(),
-  }),
   publish_due: z.object({}),
   refresh_ig_token: z.object({}),
   /** No-op used by the infra smoke test. */

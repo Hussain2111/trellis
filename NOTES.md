@@ -760,3 +760,71 @@ real external system rather than this codebase's own logic:
   now declares two daily cron entries (`keepalive`, `publish`); both are
   per Vercel's documented Hobby-tier behavior (daily minimum interval), not
   yet deployed and observed running on a schedule.
+
+---
+
+## v2 — Task 0: removals and the calendar migration
+
+v2 drops the generative half of the product and keeps the measurement half.
+Gone: the Gap tab, the Voice tab, the Drafts tab, LLM draft generation,
+Satori/resvg slide rendering, and the Supabase Storage layer that existed
+only to hold rendered slide PNGs. `/posts` is dormant — the route still
+renders the scraped back catalogue, but it is off the nav until the
+Graph-API-sourced analytics views replace it.
+
+### `drafts` + `schedule` → `calendar_entries`
+
+v1 split a scheduled post across two tables: content on `drafts`, timing on
+`schedule`, joined by a foreign key. That shape only made sense while the
+content was generated. v2 entries are hand-written, so `calendar_entries`
+owns its content inline and has no FK to anything.
+
+The migration is two files but **one transaction** — drizzle's pg dialect
+wraps every pending migration in a single `session.transaction()`
+(`node_modules/drizzle-orm/pg-core/dialect.js`), so a failure anywhere leaves
+the database untouched. That's what makes the guard in `0002` meaningful:
+
+- `0001_calendar_entries.sql` creates the table and backfills it from
+  `schedule JOIN drafts`, denormalising caption/hashtags/hook/format and
+  collapsing each draft's rendered slide URLs into `media_urls`.
+- `0002_drop_drafts_voice.sql` opens with a `DO` block that counts `schedule`
+  rows against `calendar_entries` rows and `RAISE EXCEPTION`s if the backfill
+  came up short, then drops `drafts`, `draft_assets`, `schedule`, and
+  `voice_profile`.
+
+Verified against a seeded database, not just read: slide URLs order by
+`slide_index` with NULL-url and non-`slide` assets excluded, `pending` maps to
+`planned`, `rationale` becomes `notes`, timestamps survive. A deliberately
+broken backfill run through `npm run db:migrate` left `drafts` intact and
+`calendar_entries` non-existent — the rollback is real.
+
+**Caveat worth knowing:** the guard only protects you through
+`npm run db:migrate`. Pasted into psql or the Supabase SQL editor, each
+statement autocommits and the drops will run even after the exception. Run
+migrations through the script.
+
+Never-scheduled drafts are **not** migrated. v2 has no draft generation, so
+there is no tab that would ever show them again; `0002` counts them and
+`RAISE NOTICE`s the number before dropping.
+
+### `analyses` survives, `gap` does not
+
+`analyses` and `hook_labels` stay — Opportunities and the Ideas viral-score
+view both need them. `runPatternAnalysis()` (was `runGapAnalysis`) still
+writes `patterns` and now writes `gap: null`; the column was made nullable
+rather than dropped so v1's historical rows keep their receipts.
+`resurfaced_posts` stays dormant alongside `/posts`.
+
+### Security: the tick endpoint was publicly triggerable
+
+`/api/pipeline/tick` and `/api/calendar/tick` were unauthenticated route
+handlers — anyone who knew the URL could spin the job queue. Both are gone.
+The in-page pollers now call Server Actions (`app/actions/tick.ts`), which
+need no publicly documented endpoint and no secret in the browser; the
+GitHub Actions schedule calls `/api/jobs/tick`, which was already behind
+`CRON_SECRET`, with an `Authorization: Bearer` header.
+
+This means the workflow now needs a `CRON_SECRET` repository secret matching
+the Vercel environment variable, alongside the existing `TRELLIS_URL`
+repository variable. Without it the workflow logs the omission and exits 0
+rather than silently failing.

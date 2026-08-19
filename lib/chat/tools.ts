@@ -2,11 +2,11 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/client';
-import { drafts, posts, type Post } from '../db/schema';
+import { posts, type Post } from '../db/schema';
 import { summariseByFormat } from '../analysis/features';
 import { poolComposition } from '../analysis/corpus';
 import { mineBackCatalog } from '../analysis/back-catalog';
-import { latestAnalysis } from '../analysis/gap';
+import { latestAnalysis } from '../analysis/analysis';
 import { listAccounts as listAllAccounts, selfAccount } from '../ingest/upsert';
 
 /**
@@ -85,9 +85,9 @@ export function coachTools() {
       },
     }),
 
-    getCurrentGap: tool({
+    getCurrentPatterns: tool({
       description:
-        'The most recent gap analysis: 5 winning patterns and the one headline gap, with their numbers.',
+        'The most recent analysis: the winning patterns in this niche ranked by how far ahead of the user they are, with their numbers.',
       inputSchema: z.object({}),
       execute: async () => {
         const analysis = await latestAnalysis();
@@ -97,7 +97,6 @@ export function coachTools() {
           windowDays: analysis.windowDays,
           generatedBy: analysis.generatedBy,
           patterns: analysis.patterns,
-          gap: analysis.gap,
         };
       },
     }),
@@ -111,33 +110,6 @@ export function coachTools() {
         if (!self) return { error: 'No account is marked as yours yet.' };
         const entries = await mineBackCatalog(self.id);
         return { entries: entries.slice(0, limit) };
-      },
-    }),
-
-    getDrafts: tool({
-      description: 'Current drafts and their status.',
-      inputSchema: z.object({
-        status: z
-          .enum(['draft', 'approved', 'scheduled', 'published', 'discarded', 'any'])
-          .default('any'),
-        limit: z.number().int().min(1).max(20).default(10),
-      }),
-      execute: async ({ status, limit }) => {
-        const rows = await db().select().from(drafts).orderBy(desc(drafts.id)).limit(200);
-        const filtered = (status === 'any' ? rows : rows.filter((d) => d.status === status)).slice(
-          0,
-          limit,
-        );
-        return {
-          drafts: filtered.map((d) => ({
-            id: d.id,
-            format: d.format,
-            title: d.title,
-            hook: d.hook,
-            status: d.status,
-            generatedBy: d.generatedBy,
-          })),
-        };
       },
     }),
 

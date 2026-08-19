@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { desc } from 'drizzle-orm';
-import { biggestGap, computePatterns, type Gap, type Pattern } from './patterns';
+import { computePatterns, type Pattern } from './patterns';
 import { loadCorpus } from './corpus';
 import { reconcilePatterns } from './reconcile';
 import { complete } from '../providers/llm';
@@ -72,19 +72,22 @@ function hashCorpus(corpus: { id: number }[]): string {
 export interface AnalysisResult {
   id: number;
   patterns: (Pattern & { claim: string })[];
-  gap: Gap;
   generatedBy: string;
 }
 
 export class InsufficientData extends Error {}
 
 /**
- * The full Layer A → C pipeline: load the corpus, compute the 5 patterns
- * and the single biggest gap deterministically, reconcile every claimed
- * post id against the corpus, then phrase each pattern as a sentence
- * (Gemini, with a validated deterministic fallback), and persist.
+ * The full Layer A → C pipeline: load the corpus, compute the patterns
+ * deterministically, reconcile every claimed post id against the corpus, then
+ * phrase each pattern as a sentence (Gemini, with a validated deterministic
+ * fallback), and persist.
+ *
+ * v1 also picked a single "biggest gap" and gave it its own tab. v2 drops
+ * that framing — the ranked patterns are the output, and Opportunities reads
+ * them — so `analyses.gap` is left null on every new row.
  */
-export async function runGapAnalysis(windowDays: number): Promise<AnalysisResult> {
+export async function runPatternAnalysis(windowDays: number): Promise<AnalysisResult> {
   const corpus = await loadCorpus();
   const patterns = computePatterns(corpus);
   if (patterns.length === 0) {
@@ -100,26 +103,29 @@ export async function runGapAnalysis(windowDays: number): Promise<AnalysisResult
     );
   }
 
-  const gapPattern = biggestGap(patterns);
-  if (!gapPattern) throw new InsufficientData('No pattern qualified as the biggest gap.');
-
   const { claims, generatedBy } = await phraseClaims(patterns);
 
   const patternsWithClaims = patterns.map((p) => ({ ...p, claim: claims.get(p.key)! }));
-  const gap: Gap = { ...gapPattern, claim: claims.get(gapPattern.key)! };
 
   const [row] = await db()
     .insert(analyses)
     .values({
       windowDays,
       patterns: patternsWithClaims,
-      gap,
+      gap: null,
       inputsHash: hashCorpus(corpus),
       generatedBy,
     })
     .returning({ id: analyses.id });
 
-  return { id: row!.id, patterns: patternsWithClaims, gap, generatedBy };
+  return { id: row!.id, patterns: patternsWithClaims, generatedBy };
+}
+
+/** The highest-delta pattern from an analysis row, or null. */
+export function topPattern(analysis: Analysis): (Pattern & { claim: string }) | null {
+  const patterns = analysis.patterns as (Pattern & { claim?: string })[];
+  const first = patterns[0];
+  return first?.claim ? (first as Pattern & { claim: string }) : null;
 }
 
 export async function latestAnalysis(): Promise<Analysis | null> {

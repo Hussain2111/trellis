@@ -28,12 +28,6 @@ export const envSchema = z.object({
   LLM_PROVIDER: z.enum(['google', 'fake']).default('google'),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),
   GOOGLE_MODEL: z.string().default('gemini-3.6-flash'),
-  GOOGLE_MODEL_LITE: z.string().default('gemini-2.5-flash-lite'),
-
-  // --- Images ---------------------------------------------------------------
-  // none = deterministic gradients only (fully functional).
-  // pollinations = free HTTP endpoint, no key, no SLA; degrades to gradient.
-  IMAGE_PROVIDER: z.enum(['none', 'pollinations', 'fake']).default('none'),
 
   // --- Scraping (Apify) -------------------------------------------------------
   APIFY_TOKEN: z.string().optional(),
@@ -53,13 +47,10 @@ export const envSchema = z.object({
   ALLOW_PAID_PROVIDERS: bool.default(false),
   ENABLE_IG_PUBLISHING: bool.default(false),
 
-  // --- Vercel Cron auth ---------------------------------------------------------
+  // --- Cron auth ----------------------------------------------------------------
+  // Sent as `Authorization: Bearer $CRON_SECRET` by Vercel's own cron caller
+  // and by the GitHub Actions schedule. Required in production.
   CRON_SECRET: z.string().optional(),
-
-  // --- Supabase Storage (rendered slide PNGs) -------------------------------
-  SUPABASE_URL: z.string().optional(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
-  SUPABASE_STORAGE_BUCKET: z.string().default('trellis-assets'),
 
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });

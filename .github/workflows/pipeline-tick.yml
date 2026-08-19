@@ -1,14 +1,16 @@
 name: Pipeline tick
 
-# Vercel Hobby cron is capped at once a day, no matter how many cron
-# entries you declare — not frequent enough to actually finish a scan's
-# job chain (compute_features -> classify_hooks -> run_analysis ->
-# build_voice_profile -> generate_drafts -> render_slides) in any
-# reasonable time when nobody has the dashboard open to drive the
-# client-side poller. This is the free, unauthenticated workaround: an
-# external scheduler (GitHub Actions, not Vercel's) pinging the same
-# /api/pipeline/tick the dashboard poller already uses, on a real
-# interval, independent of whether a browser tab is open anywhere.
+# Vercel Hobby cron is capped at once a day, no matter how many cron entries
+# you declare — not frequent enough to finish a scan's job chain in any
+# reasonable time when nobody has the dashboard open to drive the in-page
+# poller. This is the free workaround: an external scheduler (GitHub Actions,
+# not Vercel's) advancing the same queue on a real interval, independent of
+# whether a browser tab is open anywhere.
+#
+# It calls /api/jobs/tick, which is guarded by CRON_SECRET. Set the repository
+# secret CRON_SECRET to the same value as the Vercel environment variable, and
+# the repository variable TRELLIS_URL to the stable production domain (not a
+# per-deployment URL — those change on every deploy).
 
 on:
   schedule:
@@ -21,9 +23,18 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Poke the job queue
+        env:
+          TRELLIS_URL: ${{ vars.TRELLIS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          if [ -z "${{ vars.TRELLIS_URL }}" ]; then
+          if [ -z "$TRELLIS_URL" ]; then
             echo "TRELLIS_URL repo variable is not set — see Settings > Secrets and variables > Actions > Variables."
             exit 0
           fi
-          curl -sf -X POST "${{ vars.TRELLIS_URL }}/api/pipeline/tick" || echo "tick request failed (non-fatal, will retry in 10 min)"
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET repo secret is not set — see Settings > Secrets and variables > Actions > Secrets."
+            exit 0
+          fi
+          curl -sf -X POST "$TRELLIS_URL/api/jobs/tick" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            || echo "tick request failed (non-fatal, will retry in 10 min)"

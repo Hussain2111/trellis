@@ -19,9 +19,6 @@ describe('job payload schemas', () => {
         'compute_features',
         'classify_hooks',
         'run_analysis',
-        'build_voice_profile',
-        'generate_drafts',
-        'render_slides',
         'publish_due',
       ]),
     );
