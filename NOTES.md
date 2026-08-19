@@ -828,3 +828,100 @@ This means the workflow now needs a `CRON_SECRET` repository secret matching
 the Vercel environment variable, alongside the existing `TRELLIS_URL`
 repository variable. Without it the workflow logs the omission and exits 0
 rather than silently failing.
+
+---
+
+## v2 — Task 1 and the ten views
+
+### The data split
+
+The managed account's own data comes from the Instagram Graph API; Apify is
+reduced to competitors and niche discovery. `scanAccount` refuses
+`role: 'self'` outright rather than merely not being called that way — the two
+paths disagree about what a "view" is, and letting both write the same rows
+would produce numbers that silently aren't comparable.
+
+Existing v1-scraped self posts are kept as historical baseline. Graph insights
+have a limited lookback and cannot backfill reach or saves for them, so every
+analytics view degrades on null rather than dropping the post. `posts.source`
+records which pipeline a row came from.
+
+### The rule every view follows
+
+**A number that isn't known renders as a blank, never a zero.** This is the
+single most load-bearing decision in v2, because most views are partly null by
+nature:
+
+- Meta retires and renames insight metrics between API versions (`impressions`
+  became `views`). A version bump silently turning real engagement into zeros
+  would be indistinguishable from a post that flopped. So a metric the API
+  declines comes back `null` with a reason recorded, and when a batched
+  insights request 400s because one name is retired, it retries
+  metric-by-metric rather than losing all of them.
+- A missing day in the follower series is a gap, not a flat day — the
+  day-over-day change is null across it.
+- A tag with no prior window has a null share change, not zero: "nothing to
+  compare against" is not "no change".
+- `sum()` over an all-null column returns null in Postgres but 0 through some
+  drivers, which is why the weekly rollup aggregates in JS.
+
+`components/ui/metric.tsx` is the one place a blank is rendered, and
+`CoverageNote` says at the top of a table how much of it is measured rather
+than leaving the reader to count dashes.
+
+### Statistical guards worth remembering
+
+- **Ideas** divides a post's engagement by its own account's median. Raw likes
+  only rank accounts by size. Accounts with fewer than 5 held posts are
+  excluded and named — a median over fewer is noise, and dividing by noise
+  produces a confident-looking number with nothing behind it. A zero median is
+  excluded rather than divided by. The baseline uses the whole held history,
+  not the scored window, or a breakout would drag up the very median it is
+  measured against.
+- **Hot topics** compares share of posts, not raw counts. A window where the
+  pool simply posted more would inflate every count and make everything look
+  like it was rising.
+- **Post tracker** needs a 5% threshold for "climbing". Reach ticks up by a
+  handful for weeks on almost every post; `> 0` would label everything.
+- **Opportunities** was where a real bug surfaced: the format baseline was the
+  median of the format medians, which for two formats just picks the higher
+  one — so the better-reaching format could never clear its own bar. It is now
+  the median across the account's posts. Caught by a test, not by review.
+
+### Riyadh weeks are not UTC weeks
+
+`lib/time.ts` is a fixed +3 offset (Saudi Arabia has had no DST since 1990) and
+is a comparison/presentation layer only — every `timestamptz` stays UTC. The
+boundary matters: an entry at 01:00 Riyadh on a Monday is 22:00 UTC on the
+Sunday, so a naive `ORDER BY scheduled_for` files it in the wrong week. Both
+the calendar grouping and the weekly rollup are tested against exactly that
+instant.
+
+`isOverdue` is deliberately not `isDue`: something scheduled for 09:00 that it
+is now 14:00 the same Riyadh day is due (act now), not overdue (you missed it).
+
+### Scheduling
+
+Vercel Hobby allows two cron entries, once a day each, and both were already
+spoken for by keepalive and publish. The three v2 schedules — daily own-account
+sync, weekly niche pass, weekly token refresh — run from GitHub Actions against
+`/api/cron/*`, all behind `CRON_SECRET`.
+
+Discovery no longer chains off a scan. In v1 the expensive Apify path fired on
+the cheapest trigger; it now runs weekly. Hashtag scans were also spending
+unguarded, so discovery could overrun the month's allowance on its own — that
+is budgeted now too.
+
+### Not yet exercised against reality
+
+Everything in the Graph API layer is tested against a fake `fetch` mirroring
+Meta's documented shapes. No real `IG_ACCESS_TOKEN` with
+`instagram_manage_insights` has been used against a live account, so the exact
+metric names the current API version serves, the `follows_and_unfollows`
+breakdown shape, and whether `shortcode` appears on the media edge are all
+unconfirmed. The metric-by-metric retry exists precisely because that first
+contact is expected to disagree with the documentation somewhere.
+
+The follower-snapshot actor input (`resultsType: 'followers'`) is likewise
+assumed, not verified — the same class of bug as the `usernames`/`username`
+drift found in v1.

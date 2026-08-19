@@ -16,10 +16,10 @@ the voice profile, the single-headline-gap framing) in favour of measurement
 — the account's own analytics, straight from the Graph API. Apify is now
 only used for competitors and niche discovery.
 
-Task 0 (the removals and the `drafts`+`schedule` → `calendar_entries`
-migration) has landed. The Graph API insights layer and the new analytics
-views have not. See [`NOTES.md`](NOTES.md) for the migration log, real bugs
-found in production, and deliberate deviations.
+v2 is complete: the removals, the `drafts`+`schedule` → `calendar_entries`
+migration, the Graph API insights layer, and all ten analytics views. See
+[`NOTES.md`](NOTES.md) for the migration log, real bugs found in production,
+and deliberate deviations.
 
 An earlier local-first version of this project (SQLite, Ollama, a desktop
 worker process) lives in [`legacy/`](legacy/) for reference. It is not part
@@ -30,16 +30,24 @@ of the build — see the migration note in `NOTES.md` for why.
 One field on the dashboard — an Instagram handle — kicks off the entire
 pipeline; everything downstream runs automatically and lands on its own page:
 
-| Route          | Shows                                                            |
-| -------------- | ---------------------------------------------------------------- |
-| `/`            | Account summary, recent jobs                                     |
-| `/competitors` | The auto-discovered competitor pool and its sample-size warning  |
-| `/calendar`    | Your hand-written posting plan, due/overdue in Riyadh local time |
-| `/chat`        | A coach grounded in everything above, via read-only tools        |
-| `/settings`    | The $0.00 cost check, provider config, recent calls              |
+| Route            | Shows                                                            |
+| ---------------- | ---------------------------------------------------------------- |
+| `/`              | Account summary, recent jobs                                     |
+| `/weekly`        | This week against last, Monday–Sunday Riyadh                     |
+| `/analytics`     | Every post's reach, saves, shares and engagement                 |
+| `/tracker`       | Reach at 24h / 48h / 7d — what's still climbing                  |
+| `/audience`      | Who actually comments, over a rolling 90 days                    |
+| `/unfollows`     | Daily follower counts, and who left (paid, on demand)            |
+| `/opportunities` | Ranked gaps, each with the numbers and post ids behind it        |
+| `/ideas`         | Niche posts that beat their own account's baseline hardest       |
+| `/topics`        | Hashtags gaining share in your niche                             |
+| `/competitors`   | The pool, with add-by-handle and per-account rescan              |
+| `/calendar`      | Your hand-written posting plan, due/overdue in Riyadh local time |
+| `/chat`          | A coach grounded in everything above, via read-only tools        |
+| `/settings`      | The $0.00 cost check, Apify budget, Graph token scopes           |
 
-`/posts` still renders the scraped back catalogue but is off the nav until
-the Graph-API-sourced analytics views replace it.
+`/posts` still renders the scraped back catalogue but is off the nav —
+`/analytics` supersedes it.
 
 ## The constraints everything else follows from
 
@@ -53,6 +61,11 @@ the Graph-API-sourced analytics views replace it.
    multi-minute scrape or a model call. Long operations are rows in a `jobs`
    table with checkpoints; a webhook or a short cron/API tick advances them
    one step at a time.
+4. **No fabricated metrics.** A number that isn't known renders as a blank,
+   never a zero and never a guess. Insights only exist for Graph-sourced posts
+   inside Meta's lookback, so most views are partly null by nature — every
+   such cell goes through one component, and each view says at the top how
+   much of it is actually measured.
 
 ## How it's put together
 
@@ -62,9 +75,14 @@ the Graph-API-sourced analytics views replace it.
 - **Model provider** — Gemini free tier for every LLM call (niche inference,
   hook classification, phrasing pattern claims, chat). There is no local
   model tier in a serverless deployment.
-- **Scraping** — Apify's Instagram profile-posts actor, fixture-first. Set
-  `SCRAPE_MODE=fixture` while developing so nothing spends real Apify credit;
-  the first live scrape is captured to `./fixtures/` for replay.
+- **Your own data** — the Instagram Graph API, free: posts, per-post insights
+  (reach, saves, shares, views), comments, and daily follower counts. Requires
+  `IG_USER_ID` / `IG_ACCESS_TOKEN` with `instagram_manage_insights` and
+  `instagram_manage_comments`; `/settings` names any scope that's missing.
+- **Competitor data** — Apify, and only for competitors and niche discovery.
+  Set `SCRAPE_MODE=fixture` while developing so nothing spends real credit.
+  Every scrape is budgeted against `APIFY_MONTHLY_CREDIT_USD` and refused
+  rather than truncated when the month runs dry.
 - **Jobs** — `lib/jobs/queue.ts` claims work with Postgres `FOR UPDATE SKIP
 LOCKED`, so a cron tick and a webhook landing at the same moment can't
   double-claim a row. `lib/jobs/runner.ts` runs a time-boxed `runTick()` —

@@ -5,8 +5,10 @@ import { useState } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 
 /**
- * The entire input surface of the app: one Instagram handle, no password, no
- * OAuth. Submitting fires a scan of the account's last 100 posts.
+ * Registers the managed account and pulls it from the Graph API. v1 scraped
+ * the handle; v2 uses it as a label and reads the real data off the
+ * configured Graph token, so the API answers plainly when that isn't set up
+ * rather than queueing a job that fails ten seconds later.
  */
 export function ScanForm(): React.JSX.Element {
   const router = useRouter();
@@ -25,12 +27,12 @@ export function ScanForm(): React.JSX.Element {
         body: JSON.stringify({ handle }),
       });
       const body = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(body.error ?? 'Scan failed to start.');
+      if (!response.ok) throw new Error(body.error ?? 'Sync failed to start.');
       router.refresh();
       setStatus('idle');
     } catch (err) {
       setStatus('error');
-      setError(err instanceof Error ? err.message : 'Scan failed to start.');
+      setError(err instanceof Error ? err.message : 'Sync failed to start.');
     }
   }
 
@@ -45,7 +47,7 @@ export function ScanForm(): React.JSX.Element {
         className="w-56"
       />
       <Button type="submit" variant="primary" disabled={status === 'loading' || !handle.trim()}>
-        {status === 'loading' ? 'scanning…' : 'scan'}
+        {status === 'loading' ? 'syncing…' : 'sync'}
       </Button>
       {error ? <span className="text-[12px] text-negative">{error}</span> : null}
     </form>
