@@ -61,6 +61,15 @@ export interface AudienceSummary {
   postsWithComments: number;
   /** Comments we hold that carry no timestamp, and so sit outside every window. */
   undated: number;
+  /**
+   * The oldest comment actually held. The 90-day window is a ceiling, not a
+   * promise: `sync_own_account` pulls comments for its `commentLimit` most
+   * recent posts (10 by default), so real coverage is "your last N posts",
+   * which for an active account is far short of 90 days. The page states this
+   * rather than implying a clean 90-day sweep.
+   */
+  oldestComment: Date | null;
+  newestComment: Date | null;
 }
 
 export async function audienceSummary(
@@ -78,6 +87,8 @@ export async function audienceSummary(
       uniqueCommenters: sql<number>`count(distinct ${postComments.username}) filter (where ${postComments.commentedAt} >= ${since}::timestamptz)::int`,
       postsWithComments: sql<number>`count(distinct ${postComments.postId}) filter (where ${postComments.commentedAt} >= ${since}::timestamptz)::int`,
       undated: sql<number>`count(*) filter (where ${postComments.commentedAt} is null)::int`,
+      oldestComment: sql<string | null>`min(${postComments.commentedAt})`,
+      newestComment: sql<string | null>`max(${postComments.commentedAt})`,
     })
     .from(postComments)
     .innerJoin(posts, eq(posts.id, postComments.postId))
@@ -89,7 +100,17 @@ export async function audienceSummary(
     uniqueCommenters: row?.uniqueCommenters ?? 0,
     postsWithComments: row?.postsWithComments ?? 0,
     undated: row?.undated ?? 0,
+    // A raw `sql` aggregate has no column type for postgres-js to parse
+    // against, so these arrive as strings. Coerce here rather than leaving
+    // every caller to discover it.
+    oldestComment: toDate(row?.oldestComment),
+    newestComment: toDate(row?.newestComment),
   };
+}
+
+function toDate(value: string | Date | null | undefined): Date | null {
+  if (value == null) return null;
+  return value instanceof Date ? value : new Date(value);
 }
 
 export interface RepeatBreakdown {

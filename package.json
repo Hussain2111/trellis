@@ -15,7 +15,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify:migration": "tsx scripts/verify-migration.ts",
+    "verify:cron-auth": "tsx scripts/verify-cron-auth.ts",
+    "probe:graph": "tsx scripts/probe-graph.ts",
+    "probe:apify-followers": "tsx scripts/probe-apify-followers.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.44",

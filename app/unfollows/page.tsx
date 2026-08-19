@@ -47,10 +47,11 @@ export default async function UnfollowsPage(): Promise<React.JSX.Element> {
   const estimate = await estimateCost(SNAPSHOT_LIMIT, e.APIFY_MONTHLY_CREDIT_USD);
 
   const latest = history[0];
-  const net30 = history
-    .map((h) => h.change)
-    .filter((c): c is number => c != null)
-    .reduce((sum, c) => sum + c, 0);
+  // Sum only the days whose change is actually known. With no known changes
+  // there is nothing to add up — and 0 would read as "you held steady", which
+  // is a different claim from "we have one reading".
+  const knownChanges = history.map((h) => h.change).filter((c): c is number => c != null);
+  const net30 = knownChanges.length > 0 ? knownChanges.reduce((sum, c) => sum + c, 0) : null;
   const anyBreakdown = history.some((h) => h.follows != null || h.unfollows != null);
   const reason = history.find((h) => h.unavailableReason)?.unavailableReason ?? null;
 

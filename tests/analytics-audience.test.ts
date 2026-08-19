@@ -100,6 +100,33 @@ describe('audienceSummary', () => {
   });
 });
 
+describe('audienceSummary coverage reporting', () => {
+  it('reports the real span of comments held, not the nominal window', async () => {
+    const account = await upsertAccount({ handle: 'aud6', role: 'self' });
+    const post = await seedPost(account.id, 'COV');
+    await comment(post, 'a', daysAgo(12));
+    await comment(post, 'b', daysAgo(3));
+
+    const summary = await audienceSummary(account.id, 90);
+    // The window is 90 days, but only 12 days of comments have been ingested.
+    // The page states the second number, because sync_own_account pulls
+    // comments for its most recent posts only — never a clean 90-day sweep.
+    expect(summary.windowDays).toBe(90);
+    expect(summary.oldestComment).not.toBeNull();
+    const span = (Date.now() - summary.oldestComment!.getTime()) / 86_400_000;
+    expect(span).toBeGreaterThan(11);
+    expect(span).toBeLessThan(14);
+    expect(summary.postsWithComments).toBe(1);
+  });
+
+  it('has no span at all when nothing has been ingested', async () => {
+    const account = await upsertAccount({ handle: 'aud7', role: 'self' });
+    const summary = await audienceSummary(account.id);
+    expect(summary.oldestComment).toBeNull();
+    expect(summary.newestComment).toBeNull();
+  });
+});
+
 describe('repeatBreakdown', () => {
   it('buckets one-off, occasional and regular commenters', () => {
     const rows = [

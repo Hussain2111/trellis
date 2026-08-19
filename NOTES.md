@@ -925,3 +925,93 @@ contact is expected to disagree with the documentation somewhere.
 The follower-snapshot actor input (`resultsType: 'followers'`) is likewise
 assumed, not verified — the same class of bug as the `usernames`/`username`
 drift found in v1.
+
+---
+
+## v2 — Task 3: first contact and verification
+
+### What was actually verified, and what was only prepared
+
+Only some of this could be run without live credentials. Splitting it honestly:
+
+**Verified for real, locally:**
+
+- The full migration, dry-run against a v1-shaped database seeded with awkward
+  rows (unicode captions, embedded apostrophes and newlines, a draft whose
+  slides were inserted out of order with one unrendered, a non-`slide` asset,
+  two never-scheduled drafts, a failed schedule row with attempts). 4 schedule
+  rows in, 4 calendar entries out, no field losses, no mismatches.
+- The migrated rows read back correctly through the real code paths —
+  `listEntries`, `calendarView`, `claimDueForPublish`, `weeklyReport`.
+- Cron auth: 20/20 against a running production build. Every `/api/cron/*` and
+  `/api/jobs/tick` returns 401 unauthenticated and with a wrong bearer, 200
+  with the right one; `/api/pipeline/tick` and `/api/calendar/tick` return 404.
+- All 14 routes render with an empty database, each with an honest empty state.
+- Tracker, calendar-boundary and unfollows behaviours, against seeded data
+  chosen to break them (below).
+
+**Prepared but not run — needs credentials only the account owner has:**
+`scripts/probe-graph.ts`, `scripts/probe-apify-followers.ts`, and
+`scripts/verify-cron-auth.ts` against the production URL.
+
+### A trap in the dry-run procedure worth recording
+
+Seeding a scratch database by piping `0000_*.sql` through `psql` does **not**
+write drizzle's `__drizzle_migrations` bookkeeping, so the next `db:migrate`
+tries to replay 0000 and dies on `CREATE TABLE "accounts"`. A restored Supabase
+snapshot carries that table with it and is fine; a hand-built scratch database
+is not. Apply 0000 through `db:migrate` (with the later migrations temporarily
+moved aside) instead.
+
+### `claimDueForPublish` is a write
+
+It was in the first draft of the post-migration read-back check. It moves due
+rows to `claimed`. It must never run against production as part of
+"verification" — noted here because it reads like a query.
+
+### Bugs found by looking at real rendered pages
+
+- **`/unfollows` showed "Net, last 30 days: 0"** with a single day of history.
+  Summing an empty list of known changes gives 0, which reads as "you held
+  steady" — a different claim from "we have one reading". Now null.
+- **`/audience` claimed a 90-day window it does not have.** `sync_own_account`
+  pulls comments for its `commentLimit` most recent posts (10 by default), so
+  actual coverage is "your last 10 posts", which for an active account is far
+  short of 90 days. The ranking window was never wrong; the label was. The page
+  now states the real span held and says explicitly that someone who commented
+  before it is missing because they were never fetched, not because they went
+  quiet.
+- **Raw `sql` aggregates come back as strings.** `min()`/`max()` in a raw
+  template have no column type for postgres-js to parse against, so
+  `oldestComment` arrived as a string and `.getTime()` threw. Same root cause as
+  the earlier `Date`-binding fix in `audienceSummary`. Coerced at the boundary.
+
+### Verified behaviours, with the data that would have caught a fake
+
+- **Tracker does not invent curves.** A 200-day-old post with no insights
+  renders every checkpoint as `—` and status `not measured`; a 3-hour-old post
+  renders `—` and `too new`; only the genuinely tracked post shows a curve
+  (1.0K → 1.5K → 3.0K, now 3.2K, `climbing`). Three different kinds of blank,
+  each labelled as what it is.
+- **The Riyadh boundary holds end to end.** An entry stored as
+  `2026-08-16T22:00:00Z` renders as `Mon 17 Aug, 01:00` and files into the week
+  beginning Monday 17 Aug — not the Sunday-16th week a UTC grouping would pick.
+- **`/unfollows` with one day** shows the count, `—` for change, and the real
+  Meta reason string for the missing follows/unfollows breakdown.
+
+### `/opportunities` and `/weekly` are not LLM-generated and not cached
+
+Worth stating plainly because it was assumed otherwise. Neither page makes a
+model call; both are pure SQL over stored rows, recomputed per request at
+10–27 ms locally. There is no regeneration-on-reload risk because there is no
+generation at all.
+
+The only model output anywhere in that chain is the _phrasing_ of pattern
+claims, produced once inside `run_analysis` on the weekly cron and stored in
+`analyses.patterns` — already generate-once-read-many, and with a validated
+deterministic fallback if the model is unavailable.
+
+Known scaling boundary rather than a problem today: `ideas()` and `hotTopics()`
+load the whole competitor post set into memory to compute per-account
+baselines. Fine at the current ~132 posts; would want a SQL rewrite well before
+10k.

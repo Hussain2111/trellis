@@ -22,3 +22,8 @@ media/
 
 .DS_Store
 Thumbs.db
+
+# Probe output — contains real account data, follower usernames, and token metadata.
+graph-probe.json
+apify-followers-probe.json
+migration-snapshot*.json
