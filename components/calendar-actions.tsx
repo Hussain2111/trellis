@@ -58,21 +58,45 @@ export function MarkPostedButton({ entryId }: { entryId: number }): React.JSX.El
   );
 }
 
+export interface EntryDraft {
+  id: number;
+  scheduledFor: string;
+  format: string;
+  title: string;
+  hook: string;
+  caption: string;
+  hashtags: string[];
+  notes: string;
+}
+
+/** `datetime-local` wants local wall-clock with no zone, to the minute. */
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /**
  * v1 filled the calendar from generated drafts. v2 has no generation, so this
  * is now the only way an entry gets created — the calendar would otherwise be
- * permanently empty.
+ * permanently empty. The same form edits an existing entry when handed one.
  */
-export function NewEntryForm(): React.JSX.Element {
+export function NewEntryForm({
+  entry,
+  onDone,
+}: {
+  entry?: EntryDraft;
+  onDone?: () => void;
+} = {}): React.JSX.Element {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [scheduledFor, setScheduledFor] = useState('');
-  const [format, setFormat] = useState('image');
-  const [title, setTitle] = useState('');
-  const [hook, setHook] = useState('');
-  const [caption, setCaption] = useState('');
-  const [hashtags, setHashtags] = useState('');
-  const [notes, setNotes] = useState('');
+  const [open, setOpen] = useState(Boolean(entry));
+  const [scheduledFor, setScheduledFor] = useState(entry ? toLocalInput(entry.scheduledFor) : '');
+  const [format, setFormat] = useState(entry?.format ?? 'image');
+  const [title, setTitle] = useState(entry?.title ?? '');
+  const [hook, setHook] = useState(entry?.hook ?? '');
+  const [caption, setCaption] = useState(entry?.caption ?? '');
+  const [hashtags, setHashtags] = useState((entry?.hashtags ?? []).join(' '));
+  const [notes, setNotes] = useState(entry?.notes ?? '');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -81,33 +105,46 @@ export function NewEntryForm(): React.JSX.Element {
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch('/api/schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          // `datetime-local` has no zone; the browser's own zone is the one the
-          // user typed in, so let Date resolve it and store the real instant.
-          scheduledFor: new Date(scheduledFor).toISOString(),
-          format,
-          title,
-          hook: hook.trim() || null,
-          caption,
-          hashtags: hashtags
-            .split(/[\s,]+/)
-            .map((h) => h.replace(/^#/, '').trim())
-            .filter(Boolean),
-          notes: notes.trim() || null,
-        }),
-      });
-      const body = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(body.error ?? 'Could not save the entry.');
+      const body = {
+        // `datetime-local` has no zone; the browser's own zone is the one the
+        // user typed in, so let Date resolve it and store the real instant.
+        scheduledFor: new Date(scheduledFor).toISOString(),
+        format,
+        title,
+        hook: hook.trim() || null,
+        caption,
+        hashtags: hashtags
+          .split(/[\s,]+/)
+          .map((h) => h.replace(/^#/, '').trim())
+          .filter(Boolean),
+        notes: notes.trim() || null,
+      };
+
+      const response = entry
+        ? await fetch(`/api/schedule/${entry.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'update', ...body }),
+          })
+        : await fetch('/api/schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? 'Could not save the entry.');
       setOpen(false);
-      setScheduledFor('');
-      setTitle('');
-      setHook('');
-      setCaption('');
-      setHashtags('');
-      setNotes('');
+      onDone?.();
+      if (!entry) {
+        // Only a create form is reused; an edit form unmounts on save.
+        setScheduledFor('');
+        setTitle('');
+        setHook('');
+        setCaption('');
+        setHashtags('');
+        setNotes('');
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the entry.');
@@ -184,11 +221,44 @@ export function NewEntryForm(): React.JSX.Element {
         <Button type="submit" variant="primary" disabled={saving || !scheduledFor}>
           {saving ? 'saving…' : 'save'}
         </Button>
-        <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            setOpen(false);
+            onDone?.();
+          }}
+          disabled={saving}
+        >
           cancel
         </Button>
         {error ? <span className="text-[12px] text-negative">{error}</span> : null}
       </div>
     </form>
+  );
+}
+
+/** One calendar row, with an inline edit form the page itself cannot hold. */
+export function EntryActions({
+  entry,
+  canPost,
+}: {
+  entry: EntryDraft;
+  canPost: boolean;
+}): React.JSX.Element {
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    return <NewEntryForm entry={entry} onDone={() => setEditing(false)} />;
+  }
+
+  return (
+    <div className="flex shrink-0 gap-2">
+      {canPost ? <MarkPostedButton entryId={entry.id} /> : null}
+      <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+        edit
+      </Button>
+      <DeleteEntryButton entryId={entry.id} />
+    </div>
   );
 }
