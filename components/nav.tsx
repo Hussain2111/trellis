@@ -17,6 +17,7 @@ const ROUTES: { href: string; label: string }[] = [
   { href: '/tracker', label: 'Post tracker' },
   { href: '/audience', label: 'Followers' },
   { href: '/unfollows', label: 'Unfollows' },
+  { href: '/ideas', label: 'Ideas' },
   { href: '/competitors', label: 'Competitors' },
   { href: '/calendar', label: 'Calendar' },
   { href: '/chat', label: 'Chat' },
