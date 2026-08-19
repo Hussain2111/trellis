@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
  */
 const ROUTES: { href: string; label: string }[] = [
   { href: '/', label: 'Dashboard' },
+  { href: '/weekly', label: 'This week' },
   { href: '/analytics', label: 'Post analytics' },
   { href: '/tracker', label: 'Post tracker' },
   { href: '/audience', label: 'Followers' },
