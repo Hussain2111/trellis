@@ -1,0 +1,65 @@
+name: Scheduled jobs
+
+# Vercel Hobby allows two cron entries, once a day each. That is not enough
+# for v2: the account's own Graph API sync wants to run daily, the Apify niche
+# pass weekly, and the token check weekly, on top of the keepalive and publish
+# entries Vercel already holds. So the schedule lives here instead.
+#
+# Every endpoint below is guarded by CRON_SECRET. Set it as a repository secret
+# matching the Vercel environment variable, and set TRELLIS_URL as a repository
+# variable pointing at the stable production domain — not a per-deployment URL,
+# which changes on every deploy.
+
+on:
+  schedule:
+    # Daily, 02:00 Riyadh (23:00 UTC the previous day) — after the day's posts
+    # have had time to accumulate their first-24-hours numbers.
+    - cron: '0 23 * * *'
+    # Weekly, Monday 03:00 Riyadh (00:00 UTC Monday). Riyadh weeks start Monday,
+    # so the niche refresh lands at the top of the reporting week.
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Which schedule to run now
+        required: true
+        default: daily
+        type: choice
+        options: [daily, weekly]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pick the endpoints for this schedule
+        id: pick
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 0 * * 1" ] || [ "${{ inputs.job }}" = "weekly" ]; then
+            echo "endpoints=weekly-niche token-refresh" >> "$GITHUB_OUTPUT"
+          else
+            echo "endpoints=daily-own-account" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run them
+        env:
+          TRELLIS_URL: ${{ vars.TRELLIS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$TRELLIS_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "TRELLIS_URL variable and/or CRON_SECRET secret are not set — see Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          failed=0
+          for endpoint in ${{ steps.pick.outputs.endpoints }}; do
+            echo "--- $endpoint"
+            # These enqueue and tick; a job that needs more than one tick is
+            # carried forward by the every-10-minutes pipeline-tick workflow.
+            if ! curl -sS --fail-with-body -X GET "$TRELLIS_URL/api/cron/$endpoint" \
+                 -H "Authorization: Bearer $CRON_SECRET"; then
+              echo "$endpoint failed"
+              failed=1
+            fi
+            echo
+          done
+          exit $failed

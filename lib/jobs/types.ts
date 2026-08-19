@@ -31,6 +31,21 @@ export const jobPayloads = {
   run_analysis: z.object({
     windowDays: z.number().int().positive().default(30),
   }),
+  /** The managed account's own data, from the Graph API. Free, runs daily. */
+  sync_own_account: z.object({
+    mediaLimit: z.number().int().positive().default(50),
+    insightLimit: z.number().int().positive().default(30),
+    commentLimit: z.number().int().positive().default(10),
+  }),
+  /** The weekly Apify pass — discovery plus competitor re-scans. */
+  weekly_niche: z.object({
+    cooldownDays: z.number().int().positive().default(7),
+  }),
+  /** Manual, Apify-billed follower snapshot for the Unfollows diff. */
+  snapshot_followers: z.object({
+    accountId: z.number().int(),
+    limit: z.number().int().positive().default(2000),
+  }),
   publish_due: z.object({}),
   refresh_ig_token: z.object({}),
   /** No-op used by the infra smoke test. */

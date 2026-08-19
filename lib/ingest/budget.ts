@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { runs } from '../db/schema';
 
@@ -88,6 +88,74 @@ export class BudgetExceeded extends Error {
     super(`Refusing to scrape: ${note}`);
     this.name = 'BudgetExceeded';
   }
+}
+
+/**
+ * Records a scrape that the guard refused, in the same `runs` ledger every
+ * real call writes to. One ledger, one source of truth: a skip is a thing
+ * that happened to the budget, and it belongs next to the spends rather than
+ * in a table of its own.
+ */
+export async function recordBudgetSkip(input: {
+  operation: string;
+  note: string;
+  meta?: Record<string, unknown>;
+}): Promise<void> {
+  await db()
+    .insert(runs)
+    .values({
+      provider: 'apify',
+      operation: input.operation,
+      status: 'skipped',
+      costEstimate: 0,
+      error: input.note,
+      meta: { reason: 'budget_skipped', ...(input.meta ?? {}) },
+    });
+}
+
+export interface ApifySpend {
+  monthlyAllowanceUsd: number;
+  spentUsd: number;
+  remainingUsd: number;
+  itemsScraped: number;
+  usdPer1000Items: number;
+  observed: boolean;
+}
+
+/** Month-to-date Apify spend against the allowance, for Settings. */
+export async function getApifySpend(monthlyAllowanceUsd: number): Promise<ApifySpend> {
+  const state = await budgetState(monthlyAllowanceUsd);
+  return {
+    monthlyAllowanceUsd: state.monthlyAllowanceUsd,
+    spentUsd: state.spentUsd,
+    remainingUsd: state.remainingUsd,
+    itemsScraped: state.itemsScraped,
+    usdPer1000Items: state.usdPerItem * 1000,
+    observed: state.itemsScraped >= 100,
+  };
+}
+
+export interface BudgetSkip {
+  operation: string;
+  note: string | null;
+  at: Date;
+}
+
+/** Recent scrapes the guard refused — surfaced in Settings, not swallowed. */
+export async function getBudgetSkips(limit = 10): Promise<BudgetSkip[]> {
+  const rows = await db()
+    .select({ operation: runs.operation, note: runs.error, at: runs.createdAt })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.provider, 'apify'),
+        eq(runs.status, 'skipped'),
+        sql`${runs.meta}->>'reason' = 'budget_skipped'`,
+      ),
+    )
+    .orderBy(desc(runs.createdAt))
+    .limit(limit);
+  return rows;
 }
 
 function startOfMonth(): Date {

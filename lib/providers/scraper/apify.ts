@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ApifyClient } from 'apify-client';
 import { assertProviderAllowed } from '../guard';
 import { appUrl } from '../../app-url';
-import { estimateCost } from '../../ingest/budget';
+import { BudgetExceeded, estimateCost, recordBudgetSkip } from '../../ingest/budget';
 import { normalizeDataset } from '../../ingest/normalize';
 import { recordRun } from '../../runs/log';
 import type { ProviderHealth } from '../types';
@@ -51,6 +51,7 @@ export class ApifyScraper implements ScraperProvider {
   private readonly client: ApifyClient;
   private readonly actor: string;
   private readonly hashtagActor: string;
+  private readonly followersActor: string;
   private readonly monthlyAllowanceUsd: number;
   private readonly webhookSecret: string | undefined;
 
@@ -58,6 +59,7 @@ export class ApifyScraper implements ScraperProvider {
     token: string;
     actor: string;
     hashtagActor?: string;
+    followersActor?: string;
     monthlyAllowanceUsd: number;
     webhookSecret?: string | undefined;
   }) {
@@ -68,6 +70,7 @@ export class ApifyScraper implements ScraperProvider {
     this.client = new ApifyClient({ token: options.token });
     this.actor = options.actor;
     this.hashtagActor = options.hashtagActor ?? options.actor;
+    this.followersActor = options.followersActor ?? options.actor;
     this.monthlyAllowanceUsd = options.monthlyAllowanceUsd;
     this.webhookSecret = options.webhookSecret;
   }
@@ -97,14 +100,12 @@ export class ApifyScraper implements ScraperProvider {
   async start(request: { handle: string; limit: number }): Promise<StartedRun> {
     const estimate = await this.estimate(request);
     if (!estimate.affordable) {
-      await recordRun({
-        provider: this.id,
+      await recordBudgetSkip({
         operation: 'scrape',
-        status: 'skipped',
-        error: estimate.note,
+        note: estimate.note,
         meta: { handle: request.handle, items: 0 },
       });
-      throw new Error(`Refusing to scrape: ${estimate.note}`);
+      throw new BudgetExceeded(estimate.note);
     }
 
     const webhookUrl = this.webhookSecret
@@ -143,12 +144,66 @@ export class ApifyScraper implements ScraperProvider {
    * hashtags per account and cannot afford to block on any of them.
    */
   async startHashtag(hashtag: string, limit: number): Promise<StartedRun> {
+    // Hashtag scans bill the same as profile scans and were previously
+    // unguarded — discovery could overrun the month's allowance on its own.
+    const estimate = await estimateCost(limit, this.monthlyAllowanceUsd);
+    if (!estimate.affordable) {
+      await recordBudgetSkip({
+        operation: 'scrape_hashtag',
+        note: estimate.note,
+        meta: { hashtag, items: 0 },
+      });
+      throw new BudgetExceeded(estimate.note);
+    }
+
     const webhookUrl = this.webhookSecret
       ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
       : `${appUrl()}/api/webhooks/apify`;
 
     const run = await this.client.actor(this.hashtagActor).start(
       { hashtags: [hashtag], resultsLimit: limit },
+      {
+        webhooks: [
+          {
+            eventTypes: [
+              'ACTOR.RUN.SUCCEEDED',
+              'ACTOR.RUN.FAILED',
+              'ACTOR.RUN.ABORTED',
+              'ACTOR.RUN.TIMED_OUT',
+            ],
+            requestUrl: webhookUrl,
+          },
+        ],
+      },
+    );
+
+    return { runId: run.id, datasetId: run.defaultDatasetId };
+  }
+
+  /**
+   * Fires a follower-list scrape. The Graph API cannot list followers, so
+   * naming *who* unfollowed is the one thing in v2 that has to be scraped
+   * about the managed account — hence manual-only, and guarded like any other
+   * spend. Follower lists are large, so `limit` matters more here than
+   * anywhere else.
+   */
+  async startFollowers(handle: string, limit: number): Promise<StartedRun> {
+    const estimate = await estimateCost(limit, this.monthlyAllowanceUsd);
+    if (!estimate.affordable) {
+      await recordBudgetSkip({
+        operation: 'scrape_followers',
+        note: estimate.note,
+        meta: { handle, items: 0 },
+      });
+      throw new BudgetExceeded(estimate.note);
+    }
+
+    const webhookUrl = this.webhookSecret
+      ? `${appUrl()}/api/webhooks/apify?secret=${encodeURIComponent(this.webhookSecret)}`
+      : `${appUrl()}/api/webhooks/apify`;
+
+    const run = await this.client.actor(this.followersActor).start(
+      { usernames: [handle], resultsType: 'followers', resultsLimit: limit },
       {
         webhooks: [
           {

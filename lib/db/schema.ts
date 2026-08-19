@@ -82,8 +82,22 @@ export const posts = pgTable(
     mediaUrls: jsonb('media_urls').$type<string[]>(),
     isSponsored: boolean('is_sponsored').notNull().default(false),
     /**
-     * The untouched Apify actor payload. Mandatory: actor schemas drift, and
-     * keeping the raw response means re-normalisation never costs another scrape.
+     * Where this row came from. v1 scraped everything through Apify; v2 pulls
+     * the managed account's own posts from the Graph API and scrapes only
+     * competitors. Existing scraped self-posts stay as historical baseline —
+     * Graph insights have a limited lookback and cannot backfill reach or
+     * saves for them, so analytics views degrade on null rather than dropping
+     * the post.
+     */
+    source: text('source', { enum: ['apify', 'graph'] })
+      .notNull()
+      .default('apify'),
+    /** The media's Graph API id, when this row came from the Graph API. */
+    igMediaId: text('ig_media_id'),
+    permalink: text('permalink'),
+    /**
+     * The untouched provider payload. Mandatory: actor schemas drift, and
+     * keeping the raw response means re-normalisation never costs another fetch.
      */
     raw: jsonb('raw').notNull(),
     firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().default(now),
@@ -121,6 +135,122 @@ export const postFeatures = pgTable(
     computedAt: timestamp('computed_at', { withTimezone: true }).notNull().default(now),
   },
   (t) => [index('post_features_outlier_idx').on(t.isOutlier)],
+);
+
+// --- post_insights (Graph API media insights, captured at checkpoints) -------
+
+/**
+ * Insights are a time series, not a fact: reach at 24 hours and reach at 7
+ * days are different numbers about the same post, and Post Tracker is the
+ * difference between them. One row per (post, checkpoint) — the daily cron
+ * writes whichever checkpoints have come due, and `latest` is overwritten
+ * every run.
+ *
+ * Every metric is nullable on purpose. Meta retires and renames insight
+ * metrics between API versions, and a metric the current version refuses to
+ * return must read as "not available", never as zero.
+ */
+export const postInsights = pgTable(
+  'post_insights',
+  {
+    id: serial('id').primaryKey(),
+    postId: integer('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    checkpoint: text('checkpoint', { enum: ['t24', 't48', 't7d', 'latest'] }).notNull(),
+    reach: integer('reach'),
+    views: integer('views'),
+    saves: integer('saves'),
+    shares: integer('shares'),
+    likes: integer('likes'),
+    comments: integer('comments'),
+    totalInteractions: integer('total_interactions'),
+    /** Which metrics the API declined, so the UI can say why a cell is blank. */
+    unavailable: jsonb('unavailable')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('post_insights_post_checkpoint_uq').on(t.postId, t.checkpoint),
+    index('post_insights_captured_idx').on(t.capturedAt),
+  ],
+);
+
+// --- post_comments (Graph API comments, for Most Active Followers) -----------
+
+/**
+ * Most Active Followers is a rolling aggregate query over this table, not a
+ * stored ranking — a stored ranking would go stale the moment a comment
+ * lands, and recomputing it is a cheap group-by.
+ */
+export const postComments = pgTable(
+  'post_comments',
+  {
+    id: serial('id').primaryKey(),
+    postId: integer('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    igCommentId: text('ig_comment_id').notNull(),
+    username: text('username'),
+    text: text('text'),
+    likeCount: integer('like_count'),
+    commentedAt: timestamp('commented_at', { withTimezone: true }),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('post_comments_ig_id_uq').on(t.igCommentId),
+    index('post_comments_post_idx').on(t.postId),
+    index('post_comments_username_idx').on(t.username, t.commentedAt),
+  ],
+);
+
+// --- follower_daily (the free half of Unfollows) -----------------------------
+
+/**
+ * One row per Riyadh calendar day. `followerCount` always comes from the
+ * account itself; `follows`/`unfollows` come from the `follows_and_unfollows`
+ * account-insight metric, which Meta only serves to accounts over 100
+ * followers and has moved between API versions — hence nullable, with
+ * `unavailableReason` recording why rather than storing a zero.
+ */
+export const followerDaily = pgTable(
+  'follower_daily',
+  {
+    /** Riyadh calendar day, `YYYY-MM-DD`. Text, not `date`, so no zone coercion. */
+    day: text('day').primaryKey(),
+    followerCount: integer('follower_count'),
+    follows: integer('follows'),
+    unfollows: integer('unfollows'),
+    unavailableReason: text('unavailable_reason'),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [index('follower_daily_captured_idx').on(t.capturedAt)],
+);
+
+// --- follower_snapshots (who unfollowed — manual, Apify-billed) --------------
+
+/**
+ * The Graph API cannot list your followers, so naming *who* unfollowed needs a
+ * scrape. Nothing writes this on a schedule: it is a manual button behind the
+ * Apify budget guard, and the diff between two snapshots is computed on read.
+ */
+export const followerSnapshots = pgTable(
+  'follower_snapshots',
+  {
+    id: serial('id').primaryKey(),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    usernames: jsonb('usernames').$type<string[]>().notNull(),
+    count: integer('count').notNull(),
+    /** False when the scrape was truncated — a partial list makes every diff a lie. */
+    complete: boolean('complete').notNull().default(true),
+    note: text('note'),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [index('follower_snapshots_account_idx').on(t.accountId, t.capturedAt)],
 );
 
 // --- hook_labels (per-post Gemini classification — replaces embed+cluster) ---
@@ -356,3 +486,8 @@ export type QuotaBudget = typeof quotaBudget.$inferSelect;
 export type Analysis = typeof analyses.$inferSelect;
 export type CalendarEntry = typeof calendarEntries.$inferSelect;
 export type NewCalendarEntry = typeof calendarEntries.$inferInsert;
+export type PostInsight = typeof postInsights.$inferSelect;
+export type NewPostInsight = typeof postInsights.$inferInsert;
+export type PostComment = typeof postComments.$inferSelect;
+export type FollowerDaily = typeof followerDaily.$inferSelect;
+export type FollowerSnapshot = typeof followerSnapshots.$inferSelect;

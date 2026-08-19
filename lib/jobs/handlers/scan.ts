@@ -13,9 +13,16 @@ import { enqueue, markWaiting } from '../queue';
 import { JobPermanentError, JobWaiting, type JobContext } from '../types';
 
 /**
- * Scan one account. Incremental by default: the scraper is told which
- * shortcodes we already hold and stops at the first one it recognises, so a
- * re-scan fetches the few new posts rather than re-pulling a hundred.
+ * Scan one **competitor** account through Apify. Incremental by default: the
+ * scraper is told which shortcodes we already hold and stops at the first one
+ * it recognises, so a re-scan fetches the few new posts rather than re-pulling
+ * a hundred.
+ *
+ * The managed account is deliberately not scrapable here. Its own posts,
+ * insights and comments come from the Graph API for free (`sync_own_account`),
+ * so spending Apify credit on data Meta hands over is pure waste — and the two
+ * paths disagree about what a "view" is, which would make the numbers
+ * incomparable.
  *
  * In fixture/fake mode this completes synchronously (it's instant — no real
  * network call). In live mode it fires the Apify actor and returns; the
@@ -24,6 +31,11 @@ import { JobPermanentError, JobWaiting, type JobContext } from '../types';
 export async function scanAccount(ctx: JobContext<'scan_account'>): Promise<void> {
   const account = await getAccount(ctx.payload.accountId);
   if (!account) throw new JobPermanentError(`account ${ctx.payload.accountId} no longer exists`);
+  if (account.role === 'self') {
+    throw new JobPermanentError(
+      `@${account.handle} is the managed account — its data comes from the Graph API (sync_own_account), not Apify.`,
+    );
+  }
 
   const stopAt = await knownShortcodes(account.id);
 
@@ -82,13 +94,9 @@ export async function applyScanResult(
   // Features are cheap, deterministic and always wanted after a scan.
   await enqueue('compute_features', { accountId }, { dedupe: false });
 
-  // Competitor/niche discovery is automatic, but only chains off the self
-  // account's scan — discovering competitors of a competitor isn't a feature
-  // Growy exposes, and it would recurse indefinitely otherwise.
-  const account = await getAccount(accountId);
-  if (account?.role === 'self') {
-    await enqueue('discover_competitors', { accountId }, { dedupe: true });
-  }
+  // Discovery deliberately does NOT chain off a scan any more. It is the
+  // expensive Apify path, so it runs on the weekly cron instead of once per
+  // scan — see lib/jobs/handlers/weekly-niche.ts.
 
   return summary;
 }

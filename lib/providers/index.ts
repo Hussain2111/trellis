@@ -26,6 +26,7 @@ export function getScraper(): ScraperProvider {
         token: e.APIFY_TOKEN ?? '',
         actor: e.APIFY_ACTOR,
         hashtagActor: e.APIFY_HASHTAG_ACTOR,
+        followersActor: e.APIFY_FOLLOWERS_ACTOR,
         monthlyAllowanceUsd: e.APIFY_MONTHLY_CREDIT_USD,
         webhookSecret: e.APIFY_WEBHOOK_SECRET,
       });

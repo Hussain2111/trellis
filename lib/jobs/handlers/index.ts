@@ -7,6 +7,9 @@ import { refreshIgToken } from './refresh-ig-token';
 import { runAnalysis } from './run-analysis';
 import { scanAccount } from './scan';
 import { scanHashtag } from './scan-hashtag';
+import { snapshotFollowers } from './snapshot-followers';
+import { syncOwnAccount } from './sync-own-account';
+import { weeklyNiche } from './weekly-niche';
 
 /**
  * Registers every job handler that exists. Import this once, for its side
@@ -24,6 +27,9 @@ export function registerJobHandlers(): void {
   registerHandler('compute_features', computeFeatures);
   registerHandler('classify_hooks', classifyHooks);
   registerHandler('run_analysis', runAnalysis);
+  registerHandler('sync_own_account', syncOwnAccount);
+  registerHandler('weekly_niche', weeklyNiche);
+  registerHandler('snapshot_followers', snapshotFollowers);
   registerHandler('publish_due', publishDue);
   registerHandler('refresh_ig_token', refreshIgToken);
 }

@@ -5,6 +5,7 @@ import { env } from '@/lib/env';
 import { getAccount } from '@/lib/ingest/upsert';
 import { registerJobHandlers } from '@/lib/jobs/handlers';
 import { applyScanResult } from '@/lib/jobs/handlers/scan';
+import { applyFollowerSnapshot } from '@/lib/jobs/handlers/snapshot-followers';
 import { fail, complete as completeJob } from '@/lib/jobs/queue';
 import { getScraper } from '@/lib/providers';
 import { ApifyScraper, ingestCompletedRun } from '@/lib/providers/scraper/apify';
@@ -51,7 +52,7 @@ export async function POST(request: Request): Promise<Response> {
     .from(jobs)
     .where(
       and(
-        inArray(jobs.type, ['scan_account', 'scan_hashtag']),
+        inArray(jobs.type, ['scan_account', 'scan_hashtag', 'snapshot_followers']),
         eq(jobs.status, 'waiting'),
         sql`${jobs.checkpoint}->>'runId' = ${runId}`,
       ),
@@ -81,6 +82,17 @@ export async function POST(request: Request): Promise<Response> {
         .where(eq(jobs.id, job.id));
       await completeJob(job.id);
       return Response.json({ ok: true, hashtagPosts: results.length });
+    }
+
+    if (job.type === 'snapshot_followers') {
+      const checkpoint = job.checkpoint as { runId: string; accountId: number; limit: number };
+      if (!run.succeeded) {
+        await fail(job, new Error(`actor finished ${run.status}`), true);
+        return Response.json({ ok: false, note: `run ${run.status}` });
+      }
+      const result = await applyFollowerSnapshot(checkpoint.accountId, run.items, checkpoint.limit);
+      await completeJob(job.id);
+      return Response.json({ ok: true, followers: result.count, complete: result.complete });
     }
 
     const checkpoint = job.checkpoint as { runId: string; limit: number; stopAt: string[] };
