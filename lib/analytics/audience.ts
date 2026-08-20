@@ -30,13 +30,13 @@ export async function mostActiveFollowers(
   const windowDays = options.windowDays ?? 90;
   const since = new Date(Date.now() - windowDays * 86_400_000);
 
-  return db()
+  const rows = await db()
     .select({
       username: sql<string>`${postComments.username}`,
       comments: sql<number>`count(*)::int`,
       postsCommentedOn: sql<number>`count(distinct ${postComments.postId})::int`,
-      firstSeen: sql<Date | null>`min(${postComments.commentedAt})`,
-      lastSeen: sql<Date | null>`max(${postComments.commentedAt})`,
+      firstSeen: sql<string | null>`min(${postComments.commentedAt})`,
+      lastSeen: sql<string | null>`max(${postComments.commentedAt})`,
     })
     .from(postComments)
     .innerJoin(posts, eq(posts.id, postComments.postId))
@@ -52,6 +52,16 @@ export async function mostActiveFollowers(
     .groupBy(postComments.username)
     .orderBy(sql`count(*) desc, max(${postComments.commentedAt}) desc`)
     .limit(options.limit ?? 50);
+
+  // Raw `sql` aggregates arrive as strings — there is no column type for
+  // postgres-js to parse them against. Handing one to Intl.DateTimeFormat
+  // throws `Invalid time value`, so coerce at the boundary rather than leaving
+  // every caller to trip over it.
+  return rows.map((row) => ({
+    ...row,
+    firstSeen: toDate(row.firstSeen),
+    lastSeen: toDate(row.lastSeen),
+  }));
 }
 
 export interface AudienceSummary {

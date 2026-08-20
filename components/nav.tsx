@@ -5,19 +5,21 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
 /**
- * The cockpit. Ordered by how the pipeline actually runs, not alphabetically.
+ * Post analytics, the tracker, commenters and follower movement are all on the
+ * Dashboard now rather than being four tabs of their own. They are four views
+ * of one question — how is this account doing — and splitting them meant
+ * answering it took four clicks and a memory of which tab held which number.
  *
- * `/posts` is dormant in v2, not deleted: the route still renders the scraped
- * back catalogue, but it is off the nav until the Graph-API-sourced Post
- * Analytics view replaces it. Gap, Voice and Drafts are gone outright.
+ * What stays a tab is either about *other* accounts (Ideas, Hot topics,
+ * Competitors) or about doing rather than reading (Calendar, Chat).
+ *
+ * `/analytics` and `/posts` survive off-nav: the full post table is 100+ rows
+ * and wants a page of its own, reachable from the Dashboard section that
+ * summarises it.
  */
 const ROUTES: { href: string; label: string }[] = [
   { href: '/', label: 'Dashboard' },
   { href: '/weekly', label: 'This week' },
-  { href: '/analytics', label: 'Post analytics' },
-  { href: '/tracker', label: 'Post tracker' },
-  { href: '/audience', label: 'Followers' },
-  { href: '/unfollows', label: 'Unfollows' },
   { href: '/opportunities', label: 'Opportunities' },
   { href: '/ideas', label: 'Ideas' },
   { href: '/topics', label: 'Hot topics' },

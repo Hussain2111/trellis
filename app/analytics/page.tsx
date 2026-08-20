@@ -66,7 +66,14 @@ export default async function AnalyticsPage(): Promise<React.JSX.Element> {
               {formats.map((f) => (
                 <tr key={f.type}>
                   <td className="px-4 py-2 font-mono">{f.type}</td>
-                  <td className="metric px-4 py-2">{f.count}</td>
+                  <td className="px-4 py-2">
+                    <span className="metric">{f.count}</span>
+                    {f.measuredCount !== f.count ? (
+                      <span className="ml-1 text-[11px] text-ink-faint">
+                        ({f.measuredCount} measured)
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-2">
                     <Metric value={f.medianReach} />
                   </td>

@@ -122,7 +122,15 @@ export function median(values: number[]): number | null {
 
 export interface FormatBreakdown {
   type: string;
+  /** Posts of this format held, measured or not. */
   count: number;
+  /**
+   * How many of those actually carry reach — the real n behind the medians.
+   * Reported separately because `count` is what a reader assumes the median
+   * was computed over, and early on it is far larger: 17 images held with one
+   * measured produces a confident-looking median from a sample of one.
+   */
+  measuredCount: number;
   medianReach: number | null;
   medianEngagementOnReach: number | null;
 }
@@ -137,14 +145,18 @@ export function byFormat(rows: PostRow[]): FormatBreakdown[] {
   }
 
   return [...groups.entries()]
-    .map(([type, list]) => ({
-      type,
-      count: list.length,
-      medianReach: median(list.filter((r) => r.reach != null).map((r) => r.reach!)),
-      medianEngagementOnReach: median(
-        list.filter((r) => r.engagementOnReach != null).map((r) => r.engagementOnReach!),
-      ),
-    }))
+    .map(([type, list]) => {
+      const measured = list.filter((r) => r.reach != null);
+      return {
+        type,
+        count: list.length,
+        measuredCount: measured.length,
+        medianReach: median(measured.map((r) => r.reach!)),
+        medianEngagementOnReach: median(
+          list.filter((r) => r.engagementOnReach != null).map((r) => r.engagementOnReach!),
+        ),
+      };
+    })
     .sort((a, b) => b.count - a.count);
 }
 

@@ -100,6 +100,27 @@ describe('audienceSummary', () => {
   });
 });
 
+describe('date coercion', () => {
+  it('returns real Dates, not the strings a raw sql aggregate hands back', async () => {
+    const account = await upsertAccount({ handle: 'audD', role: 'self' });
+    const post = await seedPost(account.id, 'DATE');
+    await comment(post, 'someone', daysAgo(2));
+
+    const [row] = await mostActiveFollowers(account.id);
+    // min()/max() in a raw sql template have no column type for postgres-js to
+    // parse against, so they arrive as strings. Handing one to
+    // Intl.DateTimeFormat throws `Invalid time value` — which is exactly how
+    // this surfaced, as a 500 on the dashboard.
+    expect(row!.firstSeen).toBeInstanceOf(Date);
+    expect(row!.lastSeen).toBeInstanceOf(Date);
+    expect(() => new Intl.DateTimeFormat('en-GB').format(row!.lastSeen!)).not.toThrow();
+
+    const summary = await audienceSummary(account.id);
+    expect(summary.oldestComment).toBeInstanceOf(Date);
+    expect(summary.newestComment).toBeInstanceOf(Date);
+  });
+});
+
 describe('audienceSummary coverage reporting', () => {
   it('reports the real span of comments held, not the nominal window', async () => {
     const account = await upsertAccount({ handle: 'aud6', role: 'self' });

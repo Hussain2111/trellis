@@ -1106,3 +1106,48 @@ _concepts_ split by platform — invented territory to explore — and what exis
 measures hashtags that already appeared. The computation model and the subject
 matter both differ, so it is not a matter of wrapping the existing query in a
 generation call. Not fixed here; it needs its own pass against the 2.7 text.
+
+---
+
+## v2 — Post analytics, tracker, followers and unfollows fold into the Dashboard
+
+Four tabs became four sections of one page. They were four views of a single
+question — how is this account doing — and splitting them meant answering it
+took four clicks plus a memory of which tab held which number.
+
+What stays a tab is either about _other_ accounts (Ideas, Hot topics,
+Competitors) or about doing rather than reading (Calendar, Chat). Nav goes 13 → 9.
+
+`/analytics` survives off-nav, linked from the Dashboard section that
+summarises it: 100+ post rows want a page of their own. `/tracker`,
+`/audience` and `/unfollows` are deleted — their content fits inline.
+
+The dashboard's queries run in one `Promise.all` rather than serially, since
+there are now ten of them.
+
+### Two bugs the consolidation surfaced
+
+**`mostActiveFollowers` returned strings where the type said `Date`.** Its
+`min()`/`max()` aggregates are raw `sql` templates with no column type for
+postgres-js to parse against — the same root cause as the `audienceSummary`
+fix, in the sibling function, missed at the time. Handing one to
+`Intl.DateTimeFormat` throws `RangeError: Invalid time value`, so the page 500d
+as soon as it rendered with commenter data. `/audience` had the same latent
+bug and never hit it, because it was only ever rendered against an empty
+database. The test now asserts `instanceOf Date` rather than checking values,
+which is what would have caught it.
+
+**`byFormat` reported a total where the median had a much smaller sample.**
+"image · 17 posts · median eng 36.7%" was computed from the one image that
+carried reach; the other sixteen predate the Graph connection. The count a
+reader takes as the median's evidence was seventeen times the real one.
+`FormatBreakdown` now carries `measuredCount` and the table renders
+"17 (2 measured)". Early on, when almost nothing is measured, this is the
+difference between a baseline and a coincidence.
+
+### A debugging note worth keeping
+
+`pkill -f "next start"` does not kill the server — the process is
+`next-server`, so the old build keeps serving and every "fix" appears not to
+work. `fuser -k 3000/tcp` is the one that works. Two rounds were lost to
+testing stale code before the `EADDRINUSE` in the log gave it away.
