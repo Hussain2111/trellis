@@ -1106,3 +1106,107 @@ _concepts_ split by platform — invented territory to explore — and what exis
 measures hashtags that already appeared. The computation model and the subject
 matter both differ, so it is not a matter of wrapping the existing query in a
 generation call. Not fixed here; it needs its own pass against the 2.7 text.
+
+---
+
+## v2 — Post analytics, tracker, followers and unfollows fold into the Dashboard
+
+Four tabs became four sections of one page. They were four views of a single
+question — how is this account doing — and splitting them meant answering it
+took four clicks plus a memory of which tab held which number.
+
+What stays a tab is either about _other_ accounts (Ideas, Hot topics,
+Competitors) or about doing rather than reading (Calendar, Chat). Nav goes 13 → 9.
+
+`/analytics` survives off-nav, linked from the Dashboard section that
+summarises it: 100+ post rows want a page of their own. `/tracker`,
+`/audience` and `/unfollows` are deleted — their content fits inline.
+
+The dashboard's queries run in one `Promise.all` rather than serially, since
+there are now ten of them.
+
+### Two bugs the consolidation surfaced
+
+**`mostActiveFollowers` returned strings where the type said `Date`.** Its
+`min()`/`max()` aggregates are raw `sql` templates with no column type for
+postgres-js to parse against — the same root cause as the `audienceSummary`
+fix, in the sibling function, missed at the time. Handing one to
+`Intl.DateTimeFormat` throws `RangeError: Invalid time value`, so the page 500d
+as soon as it rendered with commenter data. `/audience` had the same latent
+bug and never hit it, because it was only ever rendered against an empty
+database. The test now asserts `instanceOf Date` rather than checking values,
+which is what would have caught it.
+
+**`byFormat` reported a total where the median had a much smaller sample.**
+"image · 17 posts · median eng 36.7%" was computed from the one image that
+carried reach; the other sixteen predate the Graph connection. The count a
+reader takes as the median's evidence was seventeen times the real one.
+`FormatBreakdown` now carries `measuredCount` and the table renders
+"17 (2 measured)". Early on, when almost nothing is measured, this is the
+difference between a baseline and a coincidence.
+
+### A debugging note worth keeping
+
+`pkill -f "next start"` does not kill the server — the process is
+`next-server`, so the old build keeps serving and every "fix" appears not to
+work. `fuser -k 3000/tcp` is the one that works. Two rounds were lost to
+testing stale code before the `EADDRINUSE` in the log gave it away.
+
+---
+
+## v2 — cutover sequencing, and a scope that was missing
+
+Three corrections to the migration plan, all of them right, recorded because
+two were sequencing mistakes rather than code mistakes and would not otherwise
+leave a trace.
+
+### `instagram_content_publish` was missing from the scope check
+
+`REQUIRED_SCOPES` listed the five scopes the _reads_ need and omitted the one
+the publisher runs on. Since the publish pipeline was deliberately retained,
+regenerating a token from that list would have quietly broken publishing — and
+`/settings` would never have said so, because it only checked the five.
+
+Now split: `REQUIRED_SCOPES` (five, always) and `PUBLISHING_SCOPES` (one,
+reported separately — quietly while `ENABLE_IG_PUBLISHING` is off, loudly once
+it is on). Keeping them separate means an account that posts by hand isn't
+nagged about a scope it will never use, while still being told the token is
+one scope short of being able to publish. `probe:graph` checks all six.
+
+### Probe before migrating, not after
+
+The original plan was token → migrate → probe. `probe:graph` is local and
+read-only: it touches no database and no deployment. If it comes back showing
+metric names differ, or that reels and images serve different fields, the
+mappers change and possibly the schema with them — so migrating first means
+migrating twice. Reversed.
+
+### The migration is not "safe with a backup", because `main` is still v1
+
+This was the sharpest of the three and the one most easily missed. `main`
+still runs v1, which reads `drafts` and `schedule` in eight files. The moment
+`0002` drops those tables the deployed app is querying tables that do not
+exist. The same applies to the environment variables: v1's slide rendering
+reads `IMAGE_PROVIDER` and `SUPABASE_STORAGE_BUCKET`, so deleting them while
+v1 is live breaks it.
+
+Migration, merge, deploy and env changes are therefore one window, not four
+tasks. A backup makes the _data_ recoverable; it does nothing about the app
+being broken in between.
+
+`docs/cutover.md` now carries the ordering, split explicitly into "free and
+reversible" and "the cutover window", so the distinction survives outside a
+conversation.
+
+### Thresholds are seed-tuned and should be revisited
+
+Every threshold in the analytics layer was chosen against seeded data. They
+are listed in `docs/cutover.md` with their current values so they can be
+questioned once a month of real history exists — the "climbing" threshold, the
+viral-score floor, the topic noise floor, the opportunity sample floors, and
+the comment window in particular.
+
+The dashboard consolidation belongs on that list too: `/tracker`, `/audience`
+and `/unfollows` were folded in as sections rather than kept as tabs, and if
+any of them turns out to need more room than a section gives it, bringing it
+back is a small change.

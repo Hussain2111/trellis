@@ -129,6 +129,20 @@ describe('byFormat', () => {
     expect(formats[0]!.medianReach).toBe(2000);
     expect(formats.find((f) => f.type === 'image')!.medianReach).toBe(100);
   });
+
+  it('reports how many posts the median was actually computed over', async () => {
+    const account = await upsertAccount({ handle: 'a8', role: 'self' });
+    // Ten images held, one measured. `count` is 10 and the median rests on 1 —
+    // a reader shown only `count` would credit the median with ten posts of
+    // evidence it does not have.
+    await seed(account.id, { shortcode: 'M1', type: 'image' }, { reach: 900 });
+    for (let i = 0; i < 9; i++) await seed(account.id, { shortcode: `U${i}`, type: 'image' });
+
+    const [images] = byFormat(await postAnalytics(account.id, 1000));
+    expect(images!.count).toBe(10);
+    expect(images!.measuredCount).toBe(1);
+    expect(images!.medianReach).toBe(900);
+  });
 });
 
 describe('median', () => {

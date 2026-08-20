@@ -120,11 +120,15 @@ async function probeToken(): Promise<void> {
     'pages_read_engagement',
     'pages_show_list',
   ];
-  for (const scope of required) {
+  // Sixth scope: only the auto-publish path uses it, but a token regenerated
+  // for the insight scopes and missing this one breaks publishing silently.
+  const publishing = ['instagram_content_publish'];
+
+  for (const scope of [...required, ...publishing]) {
     findings.push({
       section: 'token scopes',
-      name: scope,
-      verdict: scopes.includes(scope) ? 'present' : scopes.length === 0 ? 'absent' : 'absent',
+      name: publishing.includes(scope) ? `${scope} (auto-publish only)` : scope,
+      verdict: scopes.includes(scope) ? 'present' : 'absent',
       detail: scopes.length === 0 ? 'debug_token reported no scopes at all' : '',
     });
   }

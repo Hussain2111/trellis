@@ -150,10 +150,10 @@ export async function publishingLimit(
 }
 
 /**
- * Scopes v2 needs on the long-lived token. Publishing needed the first three;
- * insights and comments are new, and a token missing them does not fail — it
- * quietly returns empty data, which is exactly the failure mode that would
- * put a believable zero in front of the user. So it is checked explicitly.
+ * Scopes every v2 read depends on. A token missing one of these does not
+ * fail — it quietly returns empty data, which is exactly the failure mode that
+ * would put a believable zero in front of the user. So they are checked
+ * explicitly rather than assumed.
  */
 export const REQUIRED_SCOPES = [
   'instagram_basic',
@@ -163,6 +163,15 @@ export const REQUIRED_SCOPES = [
   'pages_show_list',
 ] as const;
 
+/**
+ * Needed only by the auto-publish path, which is retained and off by default.
+ * Kept separate from `REQUIRED_SCOPES` so an account that posts by hand isn't
+ * warned about a scope it will never use — but still checked, because
+ * regenerating a token for the insight scopes and forgetting this one silently
+ * breaks publishing the next time it is enabled.
+ */
+export const PUBLISHING_SCOPES = ['instagram_content_publish'] as const;
+
 export interface TokenInfo {
   expiresAt: number | null;
   daysRemaining: number | null;
@@ -170,6 +179,8 @@ export interface TokenInfo {
   detail: string;
   scopes: string[];
   missingScopes: string[];
+  /** Absent publishing scopes. Only matters when ENABLE_IG_PUBLISHING is on. */
+  missingPublishingScopes: string[];
 }
 
 export async function inspectToken(token: string): Promise<TokenInfo> {
@@ -189,6 +200,8 @@ export async function inspectToken(token: string): Promise<TokenInfo> {
     // token has none — don't cry wolf over a field the API left out.
     const missingScopes =
       scopes.length === 0 ? [] : REQUIRED_SCOPES.filter((s) => !scopes.includes(s));
+    const missingPublishingScopes =
+      scopes.length === 0 ? [] : PUBLISHING_SCOPES.filter((s) => !scopes.includes(s));
 
     const expiryDetail =
       daysRemaining === null ? 'no expiry reported' : `${daysRemaining} day(s) remaining`;
@@ -203,6 +216,7 @@ export async function inspectToken(token: string): Promise<TokenInfo> {
           : expiryDetail,
       scopes,
       missingScopes,
+      missingPublishingScopes,
     };
   } catch (error) {
     return {
@@ -212,6 +226,7 @@ export async function inspectToken(token: string): Promise<TokenInfo> {
       detail: (error as Error).message,
       scopes: [],
       missingScopes: [],
+      missingPublishingScopes: [],
     };
   }
 }
