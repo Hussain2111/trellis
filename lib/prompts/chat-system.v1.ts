@@ -1,7 +1,7 @@
 /**
- * The chat coach's system prompt. It carries a summary, the current gap, and
- * the voice profile — deliberately NOT the post corpus. Tools fetch on
- * demand, which is also what keeps each turn inside a per-minute token limit.
+ * The chat coach's system prompt. It carries a summary and the strongest
+ * current pattern — deliberately NOT the post corpus. Tools fetch on demand,
+ * which is also what keeps each turn inside a per-minute token limit.
  */
 
 export interface ChatSystemVars {
@@ -10,8 +10,7 @@ export interface ChatSystemVars {
   followers: number | null;
   postCount: number;
   competitorCount: number;
-  gapClaim: string | null;
-  voice: string;
+  topPatternClaim: string | null;
   today: string;
 }
 
@@ -22,11 +21,9 @@ export function renderChatSystem(vars: ChatSystemVars): string {
     `THEM: @${vars.handle}${vars.followers ? ` · ${vars.followers} followers` : ''} · ${vars.postCount} posts analysed · benchmarked against ${vars.competitorCount} accounts.`,
     vars.niche ? `NICHE: ${vars.niche}` : '',
     '',
-    vars.gapClaim
-      ? `CURRENT GAP: ${vars.gapClaim}`
-      : 'No gap analysis has been run yet. Say so if it comes up, and suggest running one.',
-    '',
-    vars.voice,
+    vars.topPatternClaim
+      ? `STRONGEST PATTERN RIGHT NOW: ${vars.topPatternClaim}`
+      : 'No analysis has been run yet. Say so if it comes up, and suggest running one.',
     '',
     'How you talk:',
     '- Direct and numerate. Lead with the number, then what it means.',

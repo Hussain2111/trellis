@@ -34,7 +34,7 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
           <p className="mt-1 text-[13px] text-ink-muted">
             {self
               ? `${formatNumber(self.followers)} followers · ${formatNumber(postCount)} posts held`
-              : 'Enter your Instagram handle to scan your last 100 posts.'}
+              : 'Enter your Instagram handle to connect it, then the daily sync keeps it current.'}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -52,8 +52,8 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
             </div>
           ) : (
             <Empty
-              title="Nothing scanned yet."
-              detail="One field, no password, no OAuth — enter a handle above to start."
+              title="Nothing synced yet."
+              detail="Enter your handle above. Posts, insights, comments and follower counts come from the Instagram Graph API — see docs/instagram-setup.md."
             />
           )}
         </Panel>

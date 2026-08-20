@@ -2,15 +2,19 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
+import { tickPipeline } from '@/app/actions/tick';
 
-/** Pokes the job queue every 10s while the dashboard is open, so a scan's
- * chained pipeline (features → hooks → analysis → voice → drafts) actually
- * runs to completion instead of sitting pending until the next daily cron. */
+/**
+ * Drives the whole job chain forward while the dashboard is open. Nothing
+ * else advances chained job types promptly: Vercel Hobby cron fires once a
+ * day, and the GitHub Actions schedule runs every 10 minutes, so without this
+ * a scan's follow-on jobs would visibly stall while the user watches.
+ */
 export function PipelineTickPoller(): null {
   const router = useRouter();
   useEffect(() => {
     const interval = setInterval(() => {
-      void fetch('/api/pipeline/tick', { method: 'POST' }).then(() => router.refresh());
+      void tickPipeline().then(() => router.refresh());
     }, 10_000);
     return () => clearInterval(interval);
   }, [router]);

@@ -45,8 +45,23 @@ Accept the invitation from <https://developers.facebook.com/settings/developer/r
 Graph API Explorer (<https://developers.facebook.com/tools/explorer/>):
 
 1. Select your app.
-2. Permissions: `instagram_basic`, `instagram_content_publish`,
-   `pages_show_list`, `pages_read_engagement`.
+2. Permissions — all six, not just the publishing ones:
+
+   | Permission                  | What breaks without it                       |
+   | --------------------------- | -------------------------------------------- |
+   | `instagram_basic`           | Everything                                   |
+   | `instagram_manage_insights` | Reach, saves, shares, views, follower counts |
+   | `instagram_manage_comments` | Most Active Followers                        |
+   | `instagram_content_publish` | Auto-publishing (optional — off by default)  |
+   | `pages_show_list`           | Finding the linked Page                      |
+   | `pages_read_engagement`     | Reading the Page → Instagram link            |
+
+   The two `manage_*` permissions are new in v2 and are the ones most likely
+   to be missing on a token generated for v1. A token without them does not
+   error — the insight and comment endpoints simply return nothing, which is
+   why Settings checks the token's scopes explicitly and says which are
+   missing rather than letting empty data pass as a quiet account.
+
 3. Generate the token, then exchange it for a long-lived one:
 
 ```
@@ -67,17 +82,32 @@ https://graph.facebook.com/v21.0/<PAGE_ID>?fields=instagram_business_account&acc
 
 The `instagram_business_account.id` is your `IG_USER_ID`.
 
-### 7. Configure and enable
+### 7. Configure
 
 Set these as Vercel project environment variables (and in `.env.local` for
 local testing):
 
 ```
-ENABLE_IG_PUBLISHING=true
 IG_HANDLE=yourhandle
 IG_USER_ID=17841400000000000
 IG_ACCESS_TOKEN=EAA...
 ```
+
+These three are **required** in v2, not optional: the managed account's own
+posts, insights, comments and follower counts all come from the Graph API
+now. Without them the daily sync fails and the analytics tabs stay empty.
+Apify is only used for competitors and niche discovery.
+
+`ENABLE_IG_PUBLISHING` is separate and still defaults to `false`. The
+intended workflow is copy → paste → post by hand; set it to `true` only if
+you want due calendar entries to go out on their own.
+
+### 8. Check it worked
+
+Open `/settings`. The Instagram panel shows the token's validity, days
+remaining, and — importantly — any of the six permissions above that the
+token is missing. Fix those before trusting a number anywhere else in the
+app.
 
 No tunnel is needed — unlike a local-first build, this app is already
 deployed at a public HTTPS URL, so the rendered slide PNGs Meta fetches

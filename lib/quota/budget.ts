@@ -15,6 +15,8 @@ export type JobType =
   | 'gap_analysis'
   | 'voice_profile'
   | 'draft_generation'
+  | 'generate_opportunities'
+  | 'generate_weekly'
   | 'chat'
   | 'misc';
 
@@ -29,6 +31,11 @@ export const DEFAULT_ALLOWANCES: Record<JobType, number> = {
   gap_analysis: 10,
   voice_profile: 5,
   draft_generation: 30,
+  // Both run once a week from cron. The rest of the allowance is headroom for
+  // manual regeneration, which is separately capped at 5/day in
+  // lib/generate/store.ts.
+  generate_opportunities: 8,
+  generate_weekly: 8,
   chat: 60,
   misc: 20,
 };
@@ -38,6 +45,10 @@ export const YIELD_ORDER: JobType[] = [
   'chat',
   'misc',
   'draft_generation',
+  // These yield early: an unelaborated week is a labelled fallback, whereas an
+  // unclassified post silently degrades every view downstream of it.
+  'generate_weekly',
+  'generate_opportunities',
   'voice_profile',
   'gap_analysis',
   'niche_inference',

@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { closeDb, db } from '../lib/db/client';
-import { accounts, analyses, draftAssets, drafts, jobs, runs, schedule } from '../lib/db/schema';
+import { accounts, analyses, calendarEntries, jobs, runs } from '../lib/db/schema';
 import { __setEnvForTests, envSchema } from '../lib/env';
 import { registerJobHandlers } from '../lib/jobs/handlers';
 import { enqueue, getJob } from '../lib/jobs/queue';
@@ -18,11 +18,12 @@ import {
 } from '../lib/publish/graph';
 import {
   claimDueForPublish,
+  createEntry,
+  deleteEntry,
+  entryState,
+  listEntries,
   markPosted,
   markScheduleFailed,
-  scheduleDraft,
-  scheduledRows,
-  unschedule,
 } from '../lib/publish/schedule';
 
 registerJobHandlers();
@@ -38,9 +39,7 @@ afterEach(async () => {
   __setGraphFetchForTests(null);
   __setEnvForTests(null);
   await db().delete(jobs);
-  await db().delete(schedule);
-  await db().delete(draftAssets);
-  await db().delete(drafts);
+  await db().delete(calendarEntries);
   await db().delete(analyses);
   await db().delete(runs);
   await db().delete(accounts);
@@ -157,169 +156,106 @@ describe('lib/publish/graph', () => {
 });
 
 describe('lib/publish/schedule', () => {
-  it('schedules, unschedules, and marks a draft posted, always keeping drafts.status in sync', async () => {
-    await upsertAccount({ handle: 'scheduleself', role: 'self' });
-    const [analysis] = await db()
-      .insert(analyses)
-      .values({ windowDays: 30, patterns: [], gap: {}, inputsHash: 'x', generatedBy: 'test' })
-      .returning({ id: analyses.id });
-    const [draft] = await db()
-      .insert(drafts)
-      .values({
-        analysisId: analysis!.id,
-        format: 'image',
-        title: 'A draft',
-        hook: 'h',
-        body: { kind: 'image', concept: 'c', image_direction: 'd' },
-        caption: 'cap',
-        hashtags: [],
-        evidence: [],
-        generatedBy: 'test',
-      })
-      .returning({ id: drafts.id });
+  function entry(
+    overrides: Partial<Parameters<typeof createEntry>[0]> = {},
+  ): Parameters<typeof createEntry>[0] {
+    return {
+      scheduledFor: new Date(Date.now() + 3_600_000),
+      format: 'image',
+      title: 'A post',
+      caption: 'cap',
+      hashtags: [],
+      mediaUrls: ['https://example.com/a.png'],
+      ...overrides,
+    };
+  }
 
-    const scheduleId = await scheduleDraft(draft!.id, new Date(Date.now() + 3_600_000));
-    let [draftRow] = await db().select().from(drafts).where(eq(drafts.id, draft!.id));
-    expect(draftRow!.status).toBe('scheduled');
+  it('creates, lists, deletes, and marks an entry posted', async () => {
+    const id = await createEntry(entry());
+    expect((await listEntries()).map((r) => r.id)).toContain(id);
 
-    const rows = await scheduledRows();
-    expect(rows.map((r) => r.schedule.id)).toContain(scheduleId);
-
-    await unschedule(scheduleId);
-    [draftRow] = await db().select().from(drafts).where(eq(drafts.id, draft!.id));
-    expect(draftRow!.status).toBe('draft');
-    expect((await scheduledRows()).map((r) => r.schedule.id)).not.toContain(scheduleId);
-
-    const secondId = await scheduleDraft(draft!.id, new Date(Date.now() + 3_600_000));
-    await markPosted(secondId);
-    const [row] = await db().select().from(schedule).where(eq(schedule.id, secondId));
+    await markPosted(id);
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, id));
     expect(row!.status).toBe('published');
     expect(row!.publishedAt).not.toBeNull();
-    [draftRow] = await db().select().from(drafts).where(eq(drafts.id, draft!.id));
-    expect(draftRow!.status).toBe('published');
+
+    await deleteEntry(id);
+    expect((await listEntries()).map((r) => r.id)).not.toContain(id);
   });
 
-  it('claimDueForPublish only claims pending rows that are actually due, atomically', async () => {
-    await upsertAccount({ handle: 'scheduleself2', role: 'self' });
-    const [analysis] = await db()
-      .insert(analyses)
-      .values({ windowDays: 30, patterns: [], gap: {}, inputsHash: 'y', generatedBy: 'test' })
-      .returning({ id: analyses.id });
-    const [draft] = await db()
-      .insert(drafts)
-      .values({
-        analysisId: analysis!.id,
-        format: 'image',
-        title: 'A draft',
-        hook: 'h',
-        body: { kind: 'image', concept: 'c', image_direction: 'd' },
-        caption: 'cap',
-        hashtags: [],
-        evidence: [],
-        generatedBy: 'test',
-      })
-      .returning({ id: drafts.id });
+  it('derives due and overdue from the clock rather than storing them', async () => {
+    const now = new Date('2026-08-19T12:00:00+03:00');
+    const planned = { status: 'planned' as const, attempts: 0, lastError: null };
 
-    const dueId = await scheduleDraft(draft!.id, new Date(Date.now() - 60_000));
-    const futureId = await scheduleDraft(draft!.id, new Date(Date.now() + 3_600_000));
+    // Later today, Riyadh time — not yet due.
+    expect(
+      entryState({ ...planned, scheduledFor: new Date('2026-08-19T18:00:00+03:00') } as never, now),
+    ).toBe('planned');
+
+    // Earlier today — due, but the day has not rolled over.
+    expect(
+      entryState({ ...planned, scheduledFor: new Date('2026-08-19T09:00:00+03:00') } as never, now),
+    ).toBe('due');
+
+    // Yesterday, Riyadh time — missed.
+    expect(
+      entryState({ ...planned, scheduledFor: new Date('2026-08-18T23:00:00+03:00') } as never, now),
+    ).toBe('overdue');
+  });
+
+  it('claimDueForPublish only claims planned rows that are actually due, atomically', async () => {
+    const dueId = await createEntry(entry({ scheduledFor: new Date(Date.now() - 60_000) }));
+    const futureId = await createEntry(entry({ scheduledFor: new Date(Date.now() + 3_600_000) }));
 
     const claimed = await claimDueForPublish();
     expect(claimed.map((c) => c.id)).toEqual([dueId]);
     expect(claimed.map((c) => c.id)).not.toContain(futureId);
 
-    const [row] = await db().select().from(schedule).where(eq(schedule.id, dueId));
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, dueId));
     expect(row!.status).toBe('claimed');
 
-    // A second claim finds nothing — the row is no longer 'pending'.
+    // A second claim finds nothing — the row is no longer 'planned'.
     expect(await claimDueForPublish()).toEqual([]);
   });
 
   it('markScheduleFailed backs off on a transient error and fails permanently on a permanent one', async () => {
-    await upsertAccount({ handle: 'scheduleself3', role: 'self' });
-    const [analysis] = await db()
-      .insert(analyses)
-      .values({ windowDays: 30, patterns: [], gap: {}, inputsHash: 'z', generatedBy: 'test' })
-      .returning({ id: analyses.id });
-    const [draft] = await db()
-      .insert(drafts)
-      .values({
-        analysisId: analysis!.id,
-        format: 'image',
-        title: 'A draft',
-        hook: 'h',
-        body: { kind: 'image', concept: 'c', image_direction: 'd' },
-        caption: 'cap',
-        hashtags: [],
-        evidence: [],
-        generatedBy: 'test',
-      })
-      .returning({ id: drafts.id });
-
-    const transientId = await scheduleDraft(draft!.id, new Date(Date.now() - 60_000));
+    const transientId = await createEntry(entry({ scheduledFor: new Date(Date.now() - 60_000) }));
     await markScheduleFailed(transientId, 'rate limited', false);
-    let [row] = await db().select().from(schedule).where(eq(schedule.id, transientId));
-    expect(row!.status).toBe('pending');
+    let [row] = await db()
+      .select()
+      .from(calendarEntries)
+      .where(eq(calendarEntries.id, transientId));
+    expect(row!.status).toBe('planned');
     expect(row!.attempts).toBe(1);
     expect(row!.scheduledFor.getTime()).toBeGreaterThan(Date.now());
 
-    const permanentId = await scheduleDraft(draft!.id, new Date(Date.now() - 60_000));
+    const permanentId = await createEntry(entry({ scheduledFor: new Date(Date.now() - 60_000) }));
     await markScheduleFailed(permanentId, 'bad request', true);
-    [row] = await db().select().from(schedule).where(eq(schedule.id, permanentId));
+    [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, permanentId));
     expect(row!.status).toBe('failed');
   });
 });
 
 describe('publish_due job handler', () => {
-  async function seedScheduledDraft(format: 'image' | 'carousel' | 'reel', slideCount: number) {
+  async function seedDueEntry(format: 'image' | 'carousel' | 'reel', mediaCount: number) {
     const self = await upsertAccount({ handle: 'jobself', role: 'self' });
-    const [analysis] = await db()
-      .insert(analyses)
-      .values({
-        windowDays: 30,
-        patterns: [],
-        gap: {},
-        inputsHash: `h${Math.random()}`,
-        generatedBy: 'test',
-      })
-      .returning({ id: analyses.id });
-    const [draft] = await db()
-      .insert(drafts)
-      .values({
-        analysisId: analysis!.id,
-        format,
-        title: 'A draft',
-        hook: 'h',
-        body:
-          format === 'carousel'
-            ? { kind: 'carousel', slides: [{ heading: 'a', body: 'b' }] }
-            : format === 'reel'
-              ? { kind: 'reel', hook_line: 'h', beats: [] }
-              : { kind: 'image', concept: 'c', image_direction: 'd' },
-        caption: 'cap',
-        hashtags: [],
-        evidence: [],
-        generatedBy: 'test',
-      })
-      .returning({ id: drafts.id });
-
-    for (let i = 1; i <= slideCount; i++) {
-      await db()
-        .insert(draftAssets)
-        .values({
-          draftId: draft!.id,
-          kind: 'slide',
-          slideIndex: i,
-          publicUrl: `https://example.com/${draft!.id}/slide-${i}.png`,
-        });
-    }
-
-    const scheduleId = await scheduleDraft(draft!.id, new Date(Date.now() - 60_000));
-    return { self, draftId: draft!.id, scheduleId };
+    const id = await createEntry({
+      scheduledFor: new Date(Date.now() - 60_000),
+      format,
+      title: 'A post',
+      caption: 'cap',
+      hashtags: [],
+      mediaUrls: Array.from(
+        { length: mediaCount },
+        (_, i) => `https://example.com/slide-${i + 1}.png`,
+      ),
+    });
+    return { self, entryId: id };
   }
 
   it('leaves due rows untouched when ENABLE_IG_PUBLISHING is false (the default)', async () => {
     __setEnvForTests(baseEnv({ ENABLE_IG_PUBLISHING: false }));
-    const { scheduleId } = await seedScheduledDraft('image', 1);
+    const { entryId } = await seedDueEntry('image', 1);
     let fetchCalled = false;
     __setGraphFetchForTests(async () => {
       fetchCalled = true;
@@ -331,15 +267,15 @@ describe('publish_due job handler', () => {
     expect((await getJob(jobId!))?.status).toBe('done');
     expect(fetchCalled).toBe(false);
 
-    const [row] = await db().select().from(schedule).where(eq(schedule.id, scheduleId));
-    expect(row!.status).toBe('pending');
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, entryId));
+    expect(row!.status).toBe('planned');
   });
 
   it('fails permanently when publishing is enabled but no token is configured', async () => {
     __setEnvForTests(
       baseEnv({ ENABLE_IG_PUBLISHING: true, IG_USER_ID: undefined, IG_ACCESS_TOKEN: undefined }),
     );
-    await seedScheduledDraft('image', 1);
+    await seedDueEntry('image', 1);
 
     const jobId = await enqueue('publish_due', {});
     await runTick(['publish_due'], 5_000);
@@ -348,11 +284,11 @@ describe('publish_due job handler', () => {
     expect(job?.lastError).toMatch(/IG_USER_ID/);
   });
 
-  it('publishes a single-image draft as one container, and marks the schedule + draft published', async () => {
+  it('publishes a single-image entry as one container and marks it published', async () => {
     __setEnvForTests(
       baseEnv({ ENABLE_IG_PUBLISHING: true, IG_USER_ID: 'IGU', IG_ACCESS_TOKEN: 'TOK' }),
     );
-    const { draftId, scheduleId } = await seedScheduledDraft('image', 2);
+    const { entryId } = await seedDueEntry('image', 2);
 
     const urlsHit: string[] = [];
     __setGraphFetchForTests(async (input) => {
@@ -371,24 +307,21 @@ describe('publish_due job handler', () => {
     await runTick(['publish_due'], 5_000);
     expect((await getJob(jobId!))?.status).toBe('done');
 
-    const [scheduleRow] = await db().select().from(schedule).where(eq(schedule.id, scheduleId));
-    expect(scheduleRow!.status).toBe('published');
-    expect(scheduleRow!.igMediaId).toBe('media-1');
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, entryId));
+    expect(row!.status).toBe('published');
+    expect(row!.igMediaId).toBe('media-1');
 
-    const [draftRow] = await db().select().from(drafts).where(eq(drafts.id, draftId));
-    expect(draftRow!.status).toBe('published');
-
-    // Only a single (non-carousel) container was created — one image_url call, not two children.
+    // A non-carousel entry creates one container even with several media URLs.
     expect(
       urlsHit.filter((u) => u.includes('/IGU/media') && !u.includes('media_publish')),
     ).toHaveLength(1);
   });
 
-  it('publishes a carousel draft as a parent container with children, one per slide', async () => {
+  it('publishes a carousel entry as a parent container with one child per media URL', async () => {
     __setEnvForTests(
       baseEnv({ ENABLE_IG_PUBLISHING: true, IG_USER_ID: 'IGU', IG_ACCESS_TOKEN: 'TOK' }),
     );
-    const { scheduleId } = await seedScheduledDraft('carousel', 3);
+    const { entryId } = await seedDueEntry('carousel', 3);
 
     let mediaCalls = 0;
     __setGraphFetchForTests(async (input) => {
@@ -408,17 +341,17 @@ describe('publish_due job handler', () => {
     await runTick(['publish_due'], 8_000);
     expect((await getJob(jobId!))?.status).toBe('done');
 
-    // 3 slide children + 1 parent container = 4 /media calls.
+    // 3 children + 1 parent container = 4 /media calls.
     expect(mediaCalls).toBe(4);
-    const [scheduleRow] = await db().select().from(schedule).where(eq(schedule.id, scheduleId));
-    expect(scheduleRow!.status).toBe('published');
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, entryId));
+    expect(row!.status).toBe('published');
   });
 
-  it('marks the schedule row permanently failed, not retried, when there are no rendered assets', async () => {
+  it('marks the entry permanently failed, not retried, when it carries no media URLs', async () => {
     __setEnvForTests(
       baseEnv({ ENABLE_IG_PUBLISHING: true, IG_USER_ID: 'IGU', IG_ACCESS_TOKEN: 'TOK' }),
     );
-    const { scheduleId } = await seedScheduledDraft('reel', 0);
+    const { entryId } = await seedDueEntry('reel', 0);
     __setGraphFetchForTests(async (input) => {
       const url = String(input);
       if (url.includes('content_publishing_limit')) {
@@ -431,9 +364,9 @@ describe('publish_due job handler', () => {
     await runTick(['publish_due'], 5_000);
     expect((await getJob(jobId!))?.status).toBe('done'); // the sweep itself succeeds; the row fails
 
-    const [row] = await db().select().from(schedule).where(eq(schedule.id, scheduleId));
+    const [row] = await db().select().from(calendarEntries).where(eq(calendarEntries.id, entryId));
     expect(row!.status).toBe('failed');
-    expect(row!.lastError).toMatch(/no rendered assets/);
+    expect(row!.lastError).toMatch(/no media URLs/);
   });
 });
 

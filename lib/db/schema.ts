@@ -82,8 +82,22 @@ export const posts = pgTable(
     mediaUrls: jsonb('media_urls').$type<string[]>(),
     isSponsored: boolean('is_sponsored').notNull().default(false),
     /**
-     * The untouched Apify actor payload. Mandatory: actor schemas drift, and
-     * keeping the raw response means re-normalisation never costs another scrape.
+     * Where this row came from. v1 scraped everything through Apify; v2 pulls
+     * the managed account's own posts from the Graph API and scrapes only
+     * competitors. Existing scraped self-posts stay as historical baseline —
+     * Graph insights have a limited lookback and cannot backfill reach or
+     * saves for them, so analytics views degrade on null rather than dropping
+     * the post.
+     */
+    source: text('source', { enum: ['apify', 'graph'] })
+      .notNull()
+      .default('apify'),
+    /** The media's Graph API id, when this row came from the Graph API. */
+    igMediaId: text('ig_media_id'),
+    permalink: text('permalink'),
+    /**
+     * The untouched provider payload. Mandatory: actor schemas drift, and
+     * keeping the raw response means re-normalisation never costs another fetch.
      */
     raw: jsonb('raw').notNull(),
     firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().default(now),
@@ -123,6 +137,122 @@ export const postFeatures = pgTable(
   (t) => [index('post_features_outlier_idx').on(t.isOutlier)],
 );
 
+// --- post_insights (Graph API media insights, captured at checkpoints) -------
+
+/**
+ * Insights are a time series, not a fact: reach at 24 hours and reach at 7
+ * days are different numbers about the same post, and Post Tracker is the
+ * difference between them. One row per (post, checkpoint) — the daily cron
+ * writes whichever checkpoints have come due, and `latest` is overwritten
+ * every run.
+ *
+ * Every metric is nullable on purpose. Meta retires and renames insight
+ * metrics between API versions, and a metric the current version refuses to
+ * return must read as "not available", never as zero.
+ */
+export const postInsights = pgTable(
+  'post_insights',
+  {
+    id: serial('id').primaryKey(),
+    postId: integer('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    checkpoint: text('checkpoint', { enum: ['t24', 't48', 't7d', 'latest'] }).notNull(),
+    reach: integer('reach'),
+    views: integer('views'),
+    saves: integer('saves'),
+    shares: integer('shares'),
+    likes: integer('likes'),
+    comments: integer('comments'),
+    totalInteractions: integer('total_interactions'),
+    /** Which metrics the API declined, so the UI can say why a cell is blank. */
+    unavailable: jsonb('unavailable')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('post_insights_post_checkpoint_uq').on(t.postId, t.checkpoint),
+    index('post_insights_captured_idx').on(t.capturedAt),
+  ],
+);
+
+// --- post_comments (Graph API comments, for Most Active Followers) -----------
+
+/**
+ * Most Active Followers is a rolling aggregate query over this table, not a
+ * stored ranking — a stored ranking would go stale the moment a comment
+ * lands, and recomputing it is a cheap group-by.
+ */
+export const postComments = pgTable(
+  'post_comments',
+  {
+    id: serial('id').primaryKey(),
+    postId: integer('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    igCommentId: text('ig_comment_id').notNull(),
+    username: text('username'),
+    text: text('text'),
+    likeCount: integer('like_count'),
+    commentedAt: timestamp('commented_at', { withTimezone: true }),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('post_comments_ig_id_uq').on(t.igCommentId),
+    index('post_comments_post_idx').on(t.postId),
+    index('post_comments_username_idx').on(t.username, t.commentedAt),
+  ],
+);
+
+// --- follower_daily (the free half of Unfollows) -----------------------------
+
+/**
+ * One row per Riyadh calendar day. `followerCount` always comes from the
+ * account itself; `follows`/`unfollows` come from the `follows_and_unfollows`
+ * account-insight metric, which Meta only serves to accounts over 100
+ * followers and has moved between API versions — hence nullable, with
+ * `unavailableReason` recording why rather than storing a zero.
+ */
+export const followerDaily = pgTable(
+  'follower_daily',
+  {
+    /** Riyadh calendar day, `YYYY-MM-DD`. Text, not `date`, so no zone coercion. */
+    day: text('day').primaryKey(),
+    followerCount: integer('follower_count'),
+    follows: integer('follows'),
+    unfollows: integer('unfollows'),
+    unavailableReason: text('unavailable_reason'),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [index('follower_daily_captured_idx').on(t.capturedAt)],
+);
+
+// --- follower_snapshots (who unfollowed — manual, Apify-billed) --------------
+
+/**
+ * The Graph API cannot list your followers, so naming *who* unfollowed needs a
+ * scrape. Nothing writes this on a schedule: it is a manual button behind the
+ * Apify budget guard, and the diff between two snapshots is computed on read.
+ */
+export const followerSnapshots = pgTable(
+  'follower_snapshots',
+  {
+    id: serial('id').primaryKey(),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    usernames: jsonb('usernames').$type<string[]>().notNull(),
+    count: integer('count').notNull(),
+    /** False when the scrape was truncated — a partial list makes every diff a lie. */
+    complete: boolean('complete').notNull().default(true),
+    note: text('note'),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [index('follower_snapshots_account_idx').on(t.accountId, t.capturedAt)],
+);
+
 // --- hook_labels (per-post Gemini classification — replaces embed+cluster) ---
 
 /**
@@ -156,8 +286,13 @@ export const analyses = pgTable(
     windowDays: integer('window_days').notNull(),
     /** Pattern[] — each { name, description, nicheStat, myStat, delta, postIds[] }. */
     patterns: jsonb('patterns').notNull(),
-    /** { claim, nicheStat, myStat, delta, postIds[] } — the single biggest gap. */
-    gap: jsonb('gap').notNull(),
+    /**
+     * v1's single-biggest-gap payload. The Gap tab is gone and nothing writes
+     * this any more, but the column stays nullable rather than dropped so the
+     * historical analyses keep their receipts. v2 stores Opportunities output
+     * in `patterns`.
+     */
+    gap: jsonb('gap'),
     inputsHash: text('inputs_hash').notNull(),
     generatedBy: text('generated_by').notNull(),
   },
@@ -186,93 +321,103 @@ export const resurfacedPosts = pgTable(
   (t) => [index('resurfaced_posts_post_idx').on(t.postId)],
 );
 
-// --- voice_profile -------------------------------------------------------------
+// --- calendar_entries (hand-written plan + the Graph API publish queue) ------
 
-export const voiceProfile = pgTable(
-  'voice_profile',
+/**
+ * Replaces v1's `drafts` + `schedule` pair. Content lives inline here rather
+ * than behind a foreign key: v2 has no LLM draft generation, so an entry is
+ * something the user typed, not a row pointing at a generated artefact.
+ *
+ * `status` stores only the states the publisher actually writes. `due` and
+ * `overdue` are *derived* from `scheduledFor` against Riyadh-local now (see
+ * `lib/time.ts`) and are deliberately not stored — a stored `due` would go
+ * stale the moment the clock passed it with nothing running.
+ */
+export const calendarEntries = pgTable(
+  'calendar_entries',
   {
     id: serial('id').primaryKey(),
-    version: integer('version').notNull(),
-    markdown: text('markdown').notNull(),
-    fields: jsonb('fields').notNull(),
-    active: boolean('active').notNull().default(true),
-    generatedBy: text('generated_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [uniqueIndex('voice_profile_version_uq').on(t.version)],
-);
-
-// --- drafts ----------------------------------------------------------------
-
-export const drafts = pgTable(
-  'drafts',
-  {
-    id: serial('id').primaryKey(),
-    analysisId: integer('analysis_id').references(() => analyses.id, { onDelete: 'set null' }),
-    format: text('format', { enum: ['carousel', 'reel', 'image'] }).notNull(),
-    patternIndex: integer('pattern_index'),
-    title: text('title').notNull(),
-    hook: text('hook').notNull(),
-    /** Carousel body: { headline, slides: [{text}], cta }. */
-    body: jsonb('body').notNull(),
-    caption: text('caption').notNull(),
-    hashtags: jsonb('hashtags').$type<string[]>().notNull(),
-    cta: text('cta'),
-    rationale: text('rationale'),
-    evidence: jsonb('evidence').$type<number[]>(),
-    status: text('status', { enum: ['draft', 'approved', 'scheduled', 'published', 'discarded'] })
-      .notNull()
-      .default('draft'),
-    generatedBy: text('generated_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [index('drafts_status_idx').on(t.status), index('drafts_analysis_idx').on(t.analysisId)],
-);
-
-// --- draft_assets (slide PNGs, stored in Supabase Storage) -------------------
-
-export const draftAssets = pgTable(
-  'draft_assets',
-  {
-    id: serial('id').primaryKey(),
-    draftId: integer('draft_id')
-      .notNull()
-      .references(() => drafts.id, { onDelete: 'cascade' }),
-    kind: text('kind', { enum: ['slide', 'background', 'cover'] }).notNull(),
-    slideIndex: integer('slide_index'),
-    /** Path inside the Supabase Storage bucket. */
-    storagePath: text('storage_path'),
-    publicUrl: text('public_url'),
-    prompt: text('prompt'),
-    provider: text('provider'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
-  },
-  (t) => [index('draft_assets_draft_idx').on(t.draftId)],
-);
-
-// --- schedule (Graph API publish queue) ---------------------------------------
-
-export const schedule = pgTable(
-  'schedule',
-  {
-    id: serial('id').primaryKey(),
-    draftId: integer('draft_id')
-      .notNull()
-      .references(() => drafts.id, { onDelete: 'cascade' }),
     scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
     status: text('status', {
-      enum: ['pending', 'claimed', 'publishing', 'published', 'failed'],
+      enum: ['planned', 'claimed', 'publishing', 'published', 'failed'],
     })
       .notNull()
-      .default('pending'),
+      .default('planned'),
+    format: text('format', { enum: ['carousel', 'reel', 'image', 'story'] })
+      .notNull()
+      .default('image'),
+    title: text('title').notNull().default(''),
+    hook: text('hook'),
+    caption: text('caption').notNull().default(''),
+    hashtags: jsonb('hashtags')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    notes: text('notes'),
+    /** Publicly reachable image URLs, required only by the auto-publish path. */
+    mediaUrls: jsonb('media_urls')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
     igMediaId: text('ig_media_id'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now),
   },
-  (t) => [index('schedule_due_idx').on(t.status, t.scheduledFor)],
+  (t) => [index('calendar_entries_due_idx').on(t.status, t.scheduledFor)],
+);
+
+// --- generations (Gemini's interpretation layer, cached per week) ------------
+
+/**
+ * SQL computes every number; Gemini interprets them. This table holds the
+ * interpretation.
+ *
+ * Cached per Riyadh week and written by the weekly cron, never on a page load.
+ * A model call per request would burn the Gemini free-tier rate limit and make
+ * a page view cost something, which the $0/month constraint does not allow.
+ *
+ * `payload` is stored alongside `output` deliberately: it is the evidence the
+ * generation was validated against, and without it a stored insight cannot be
+ * re-checked later.
+ */
+export const generations = pgTable(
+  'generations',
+  {
+    id: serial('id').primaryKey(),
+    kind: text('kind', { enum: ['opportunities', 'weekly'] }).notNull(),
+    /** Monday of the Riyadh week this covers, `YYYY-MM-DD`. */
+    weekStart: text('week_start').notNull(),
+    /** Exactly what was sent to the model — every figure in it computed in SQL. */
+    payload: jsonb('payload').notNull(),
+    /**
+     * The validated result, with anything that failed validation already
+     * stripped. Nullable: a fallback row records that generation was attempted
+     * and what went wrong, and has no output to store.
+     */
+    output: jsonb('output'),
+    /**
+     * `ok` = the model ran and its output survived validation.
+     * `fallback` = the model failed, was out of quota, or produced nothing
+     * that validated; the deterministic output is what renders, labelled.
+     */
+    status: text('status', { enum: ['ok', 'fallback'] })
+      .notNull()
+      .default('ok'),
+    /** What validation stripped and why. Kept so a thin result is explainable. */
+    validationNotes: jsonb('validation_notes')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    generatedBy: text('generated_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('generations_kind_week_uq').on(t.kind, t.weekStart),
+    index('generations_created_idx').on(t.createdAt),
+  ],
 );
 
 // --- chat --------------------------------------------------------------------
@@ -390,6 +535,12 @@ export type NewJob = typeof jobs.$inferInsert;
 export type Run = typeof runs.$inferSelect;
 export type QuotaBudget = typeof quotaBudget.$inferSelect;
 export type Analysis = typeof analyses.$inferSelect;
-export type Draft = typeof drafts.$inferSelect;
-export type DraftAsset = typeof draftAssets.$inferSelect;
-export type Schedule = typeof schedule.$inferSelect;
+export type CalendarEntry = typeof calendarEntries.$inferSelect;
+export type NewCalendarEntry = typeof calendarEntries.$inferInsert;
+export type PostInsight = typeof postInsights.$inferSelect;
+export type NewPostInsight = typeof postInsights.$inferInsert;
+export type PostComment = typeof postComments.$inferSelect;
+export type FollowerDaily = typeof followerDaily.$inferSelect;
+export type FollowerSnapshot = typeof followerSnapshots.$inferSelect;
+export type Generation = typeof generations.$inferSelect;
+export type NewGeneration = typeof generations.$inferInsert;

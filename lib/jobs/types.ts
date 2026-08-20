@@ -31,15 +31,27 @@ export const jobPayloads = {
   run_analysis: z.object({
     windowDays: z.number().int().positive().default(30),
   }),
-  build_voice_profile: z.object({
-    topN: z.number().int().positive().default(20),
+  /** The managed account's own data, from the Graph API. Free, runs daily. */
+  sync_own_account: z.object({
+    mediaLimit: z.number().int().positive().default(50),
+    insightLimit: z.number().int().positive().default(30),
+    commentLimit: z.number().int().positive().default(10),
   }),
-  generate_drafts: z.object({
-    analysisId: z.number().int(),
-    count: z.number().int().positive().default(12),
+  /** The weekly Apify pass — discovery plus competitor re-scans. */
+  weekly_niche: z.object({
+    cooldownDays: z.number().int().positive().default(7),
   }),
-  render_slides: z.object({
-    draftId: z.number().int(),
+  /**
+   * Gemini's interpretation pass over the SQL-computed analytics. Runs from
+   * the weekly cron; page loads read the cache and never generate.
+   */
+  generate_insights: z.object({
+    kinds: z.array(z.enum(['opportunities', 'weekly'])).default(['opportunities', 'weekly']),
+  }),
+  /** Manual, Apify-billed follower snapshot for the Unfollows diff. */
+  snapshot_followers: z.object({
+    accountId: z.number().int(),
+    limit: z.number().int().positive().default(2000),
   }),
   publish_due: z.object({}),
   refresh_ig_token: z.object({}),

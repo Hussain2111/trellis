@@ -7,7 +7,6 @@ import {
   analyses,
   chatMessages,
   chatThreads,
-  drafts,
   jobs,
   posts,
   quotaBudget,
@@ -25,14 +24,13 @@ import { coachTools } from '../lib/chat/tools';
 import { upsertAccount, upsertPosts } from '../lib/ingest/upsert';
 import { __setChatModelForTests } from '../lib/providers/llm/chat-model';
 import type { ScrapedPost } from '../lib/providers/scraper/types';
-import type { Gap, Pattern } from '../lib/analysis/patterns';
+import type { Pattern } from '../lib/analysis/patterns';
 
 afterEach(async () => {
   __setChatModelForTests(null);
   await db().delete(chatMessages);
   await db().delete(chatThreads);
   await db().delete(jobs);
-  await db().delete(drafts);
   await db().delete(analyses);
   await db().delete(posts);
   await db().delete(accounts);
@@ -102,12 +100,12 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('@coachme');
     expect(prompt).toContain('5000 followers');
     expect(prompt).toContain('home cooking');
-    expect(prompt).toContain('No gap analysis has been run yet');
+    expect(prompt).toContain('No analysis has been run yet');
   });
 
-  it('states the current gap claim when an analysis exists', async () => {
+  it('states the strongest current pattern when an analysis exists', async () => {
     await upsertAccount({ handle: 'coachme2', role: 'self' });
-    const gap: Gap = {
+    const pattern: Pattern & { claim: string } = {
       key: 'has_cta',
       name: 'CTA usage',
       nicheStat: 0.6,
@@ -123,8 +121,8 @@ describe('buildSystemPrompt', () => {
       .insert(analyses)
       .values({
         windowDays: 30,
-        patterns: [gap as Pattern & { claim: string }],
-        gap,
+        patterns: [pattern],
+        gap: null,
         inputsHash: 'x',
         generatedBy: 'test',
       });
@@ -171,9 +169,9 @@ describe('coachTools (grounded, read-only)', () => {
     expect(result.posts[0]?.likes).toBe(999);
   });
 
-  it('getCurrentGap returns an error when nothing has been analysed, and the real analysis otherwise', async () => {
+  it('getCurrentPatterns returns an error when nothing has been analysed, and the real analysis otherwise', async () => {
     const tools = coachTools();
-    const empty = await tools.getCurrentGap.execute!({}, {
+    const empty = await tools.getCurrentPatterns.execute!({}, {
       toolCallId: 't4',
       messages: [],
     } as never);
@@ -183,61 +181,18 @@ describe('coachTools (grounded, read-only)', () => {
       .insert(analyses)
       .values({
         windowDays: 30,
-        patterns: [],
-        gap: { claim: 'the gap' },
+        patterns: [{ key: 'has_cta', claim: 'the pattern' }],
+        gap: null,
         inputsHash: 'x',
         generatedBy: 'test',
       });
-    const result = (await tools.getCurrentGap.execute!({}, {
+    const result = (await tools.getCurrentPatterns.execute!({}, {
       toolCallId: 't5',
       messages: [],
     } as never)) as {
-      gap: { claim: string };
+      patterns: { claim: string }[];
     };
-    expect(result.gap.claim).toBe('the gap');
-  });
-
-  it('getDrafts filters by status', async () => {
-    await upsertAccount({ handle: 'toolsself3', role: 'self' });
-    const [analysis] = await db()
-      .insert(analyses)
-      .values({ windowDays: 30, patterns: [], gap: {}, inputsHash: 'y', generatedBy: 'test' })
-      .returning({ id: analyses.id });
-    await db()
-      .insert(drafts)
-      .values([
-        {
-          analysisId: analysis!.id,
-          format: 'image',
-          title: 'Draft A',
-          hook: 'h',
-          body: { kind: 'image', concept: 'c', image_direction: 'd' },
-          caption: 'x',
-          hashtags: [],
-          evidence: [],
-          status: 'draft',
-          generatedBy: 'test',
-        },
-        {
-          analysisId: analysis!.id,
-          format: 'image',
-          title: 'Draft B',
-          hook: 'h',
-          body: { kind: 'image', concept: 'c', image_direction: 'd' },
-          caption: 'x',
-          hashtags: [],
-          evidence: [],
-          status: 'approved',
-          generatedBy: 'test',
-        },
-      ]);
-
-    const tools = coachTools();
-    const result = (await tools.getDrafts.execute!({ status: 'approved', limit: 10 }, {
-      toolCallId: 't6',
-      messages: [],
-    } as never)) as { drafts: { title: string }[] };
-    expect(result.drafts.map((d) => d.title)).toEqual(['Draft B']);
+    expect(result.patterns[0]?.claim).toBe('the pattern');
   });
 
   it('listAccounts reports every tracked account', async () => {

@@ -760,3 +760,349 @@ real external system rather than this codebase's own logic:
   now declares two daily cron entries (`keepalive`, `publish`); both are
   per Vercel's documented Hobby-tier behavior (daily minimum interval), not
   yet deployed and observed running on a schedule.
+
+---
+
+## v2 — Task 0: removals and the calendar migration
+
+v2 drops the generative half of the product and keeps the measurement half.
+Gone: the Gap tab, the Voice tab, the Drafts tab, LLM draft generation,
+Satori/resvg slide rendering, and the Supabase Storage layer that existed
+only to hold rendered slide PNGs. `/posts` is dormant — the route still
+renders the scraped back catalogue, but it is off the nav until the
+Graph-API-sourced analytics views replace it.
+
+### `drafts` + `schedule` → `calendar_entries`
+
+v1 split a scheduled post across two tables: content on `drafts`, timing on
+`schedule`, joined by a foreign key. That shape only made sense while the
+content was generated. v2 entries are hand-written, so `calendar_entries`
+owns its content inline and has no FK to anything.
+
+The migration is two files but **one transaction** — drizzle's pg dialect
+wraps every pending migration in a single `session.transaction()`
+(`node_modules/drizzle-orm/pg-core/dialect.js`), so a failure anywhere leaves
+the database untouched. That's what makes the guard in `0002` meaningful:
+
+- `0001_calendar_entries.sql` creates the table and backfills it from
+  `schedule JOIN drafts`, denormalising caption/hashtags/hook/format and
+  collapsing each draft's rendered slide URLs into `media_urls`.
+- `0002_drop_drafts_voice.sql` opens with a `DO` block that counts `schedule`
+  rows against `calendar_entries` rows and `RAISE EXCEPTION`s if the backfill
+  came up short, then drops `drafts`, `draft_assets`, `schedule`, and
+  `voice_profile`.
+
+Verified against a seeded database, not just read: slide URLs order by
+`slide_index` with NULL-url and non-`slide` assets excluded, `pending` maps to
+`planned`, `rationale` becomes `notes`, timestamps survive. A deliberately
+broken backfill run through `npm run db:migrate` left `drafts` intact and
+`calendar_entries` non-existent — the rollback is real.
+
+**Caveat worth knowing:** the guard only protects you through
+`npm run db:migrate`. Pasted into psql or the Supabase SQL editor, each
+statement autocommits and the drops will run even after the exception. Run
+migrations through the script.
+
+Never-scheduled drafts are **not** migrated. v2 has no draft generation, so
+there is no tab that would ever show them again; `0002` counts them and
+`RAISE NOTICE`s the number before dropping.
+
+### `analyses` survives, `gap` does not
+
+`analyses` and `hook_labels` stay — Opportunities and the Ideas viral-score
+view both need them. `runPatternAnalysis()` (was `runGapAnalysis`) still
+writes `patterns` and now writes `gap: null`; the column was made nullable
+rather than dropped so v1's historical rows keep their receipts.
+`resurfaced_posts` stays dormant alongside `/posts`.
+
+### Security: the tick endpoint was publicly triggerable
+
+`/api/pipeline/tick` and `/api/calendar/tick` were unauthenticated route
+handlers — anyone who knew the URL could spin the job queue. Both are gone.
+The in-page pollers now call Server Actions (`app/actions/tick.ts`), which
+need no publicly documented endpoint and no secret in the browser; the
+GitHub Actions schedule calls `/api/jobs/tick`, which was already behind
+`CRON_SECRET`, with an `Authorization: Bearer` header.
+
+This means the workflow now needs a `CRON_SECRET` repository secret matching
+the Vercel environment variable, alongside the existing `TRELLIS_URL`
+repository variable. Without it the workflow logs the omission and exits 0
+rather than silently failing.
+
+---
+
+## v2 — Task 1 and the ten views
+
+### The data split
+
+The managed account's own data comes from the Instagram Graph API; Apify is
+reduced to competitors and niche discovery. `scanAccount` refuses
+`role: 'self'` outright rather than merely not being called that way — the two
+paths disagree about what a "view" is, and letting both write the same rows
+would produce numbers that silently aren't comparable.
+
+Existing v1-scraped self posts are kept as historical baseline. Graph insights
+have a limited lookback and cannot backfill reach or saves for them, so every
+analytics view degrades on null rather than dropping the post. `posts.source`
+records which pipeline a row came from.
+
+### The rule every view follows
+
+**A number that isn't known renders as a blank, never a zero.** This is the
+single most load-bearing decision in v2, because most views are partly null by
+nature:
+
+- Meta retires and renames insight metrics between API versions (`impressions`
+  became `views`). A version bump silently turning real engagement into zeros
+  would be indistinguishable from a post that flopped. So a metric the API
+  declines comes back `null` with a reason recorded, and when a batched
+  insights request 400s because one name is retired, it retries
+  metric-by-metric rather than losing all of them.
+- A missing day in the follower series is a gap, not a flat day — the
+  day-over-day change is null across it.
+- A tag with no prior window has a null share change, not zero: "nothing to
+  compare against" is not "no change".
+- `sum()` over an all-null column returns null in Postgres but 0 through some
+  drivers, which is why the weekly rollup aggregates in JS.
+
+`components/ui/metric.tsx` is the one place a blank is rendered, and
+`CoverageNote` says at the top of a table how much of it is measured rather
+than leaving the reader to count dashes.
+
+### Statistical guards worth remembering
+
+- **Ideas** divides a post's engagement by its own account's median. Raw likes
+  only rank accounts by size. Accounts with fewer than 5 held posts are
+  excluded and named — a median over fewer is noise, and dividing by noise
+  produces a confident-looking number with nothing behind it. A zero median is
+  excluded rather than divided by. The baseline uses the whole held history,
+  not the scored window, or a breakout would drag up the very median it is
+  measured against.
+- **Hot topics** compares share of posts, not raw counts. A window where the
+  pool simply posted more would inflate every count and make everything look
+  like it was rising.
+- **Post tracker** needs a 5% threshold for "climbing". Reach ticks up by a
+  handful for weeks on almost every post; `> 0` would label everything.
+- **Opportunities** was where a real bug surfaced: the format baseline was the
+  median of the format medians, which for two formats just picks the higher
+  one — so the better-reaching format could never clear its own bar. It is now
+  the median across the account's posts. Caught by a test, not by review.
+
+### Riyadh weeks are not UTC weeks
+
+`lib/time.ts` is a fixed +3 offset (Saudi Arabia has had no DST since 1990) and
+is a comparison/presentation layer only — every `timestamptz` stays UTC. The
+boundary matters: an entry at 01:00 Riyadh on a Monday is 22:00 UTC on the
+Sunday, so a naive `ORDER BY scheduled_for` files it in the wrong week. Both
+the calendar grouping and the weekly rollup are tested against exactly that
+instant.
+
+`isOverdue` is deliberately not `isDue`: something scheduled for 09:00 that it
+is now 14:00 the same Riyadh day is due (act now), not overdue (you missed it).
+
+### Scheduling
+
+Vercel Hobby allows two cron entries, once a day each, and both were already
+spoken for by keepalive and publish. The three v2 schedules — daily own-account
+sync, weekly niche pass, weekly token refresh — run from GitHub Actions against
+`/api/cron/*`, all behind `CRON_SECRET`.
+
+Discovery no longer chains off a scan. In v1 the expensive Apify path fired on
+the cheapest trigger; it now runs weekly. Hashtag scans were also spending
+unguarded, so discovery could overrun the month's allowance on its own — that
+is budgeted now too.
+
+### Not yet exercised against reality
+
+Everything in the Graph API layer is tested against a fake `fetch` mirroring
+Meta's documented shapes. No real `IG_ACCESS_TOKEN` with
+`instagram_manage_insights` has been used against a live account, so the exact
+metric names the current API version serves, the `follows_and_unfollows`
+breakdown shape, and whether `shortcode` appears on the media edge are all
+unconfirmed. The metric-by-metric retry exists precisely because that first
+contact is expected to disagree with the documentation somewhere.
+
+The follower-snapshot actor input (`resultsType: 'followers'`) is likewise
+assumed, not verified — the same class of bug as the `usernames`/`username`
+drift found in v1.
+
+---
+
+## v2 — Task 3: first contact and verification
+
+### What was actually verified, and what was only prepared
+
+Only some of this could be run without live credentials. Splitting it honestly:
+
+**Verified for real, locally:**
+
+- The full migration, dry-run against a v1-shaped database seeded with awkward
+  rows (unicode captions, embedded apostrophes and newlines, a draft whose
+  slides were inserted out of order with one unrendered, a non-`slide` asset,
+  two never-scheduled drafts, a failed schedule row with attempts). 4 schedule
+  rows in, 4 calendar entries out, no field losses, no mismatches.
+- The migrated rows read back correctly through the real code paths —
+  `listEntries`, `calendarView`, `claimDueForPublish`, `weeklyReport`.
+- Cron auth: 20/20 against a running production build. Every `/api/cron/*` and
+  `/api/jobs/tick` returns 401 unauthenticated and with a wrong bearer, 200
+  with the right one; `/api/pipeline/tick` and `/api/calendar/tick` return 404.
+- All 14 routes render with an empty database, each with an honest empty state.
+- Tracker, calendar-boundary and unfollows behaviours, against seeded data
+  chosen to break them (below).
+
+**Prepared but not run — needs credentials only the account owner has:**
+`scripts/probe-graph.ts`, `scripts/probe-apify-followers.ts`, and
+`scripts/verify-cron-auth.ts` against the production URL.
+
+### A trap in the dry-run procedure worth recording
+
+Seeding a scratch database by piping `0000_*.sql` through `psql` does **not**
+write drizzle's `__drizzle_migrations` bookkeeping, so the next `db:migrate`
+tries to replay 0000 and dies on `CREATE TABLE "accounts"`. A restored Supabase
+snapshot carries that table with it and is fine; a hand-built scratch database
+is not. Apply 0000 through `db:migrate` (with the later migrations temporarily
+moved aside) instead.
+
+### `claimDueForPublish` is a write
+
+It was in the first draft of the post-migration read-back check. It moves due
+rows to `claimed`. It must never run against production as part of
+"verification" — noted here because it reads like a query.
+
+### Bugs found by looking at real rendered pages
+
+- **`/unfollows` showed "Net, last 30 days: 0"** with a single day of history.
+  Summing an empty list of known changes gives 0, which reads as "you held
+  steady" — a different claim from "we have one reading". Now null.
+- **`/audience` claimed a 90-day window it does not have.** `sync_own_account`
+  pulls comments for its `commentLimit` most recent posts (10 by default), so
+  actual coverage is "your last 10 posts", which for an active account is far
+  short of 90 days. The ranking window was never wrong; the label was. The page
+  now states the real span held and says explicitly that someone who commented
+  before it is missing because they were never fetched, not because they went
+  quiet.
+- **Raw `sql` aggregates come back as strings.** `min()`/`max()` in a raw
+  template have no column type for postgres-js to parse against, so
+  `oldestComment` arrived as a string and `.getTime()` threw. Same root cause as
+  the earlier `Date`-binding fix in `audienceSummary`. Coerced at the boundary.
+
+### Verified behaviours, with the data that would have caught a fake
+
+- **Tracker does not invent curves.** A 200-day-old post with no insights
+  renders every checkpoint as `—` and status `not measured`; a 3-hour-old post
+  renders `—` and `too new`; only the genuinely tracked post shows a curve
+  (1.0K → 1.5K → 3.0K, now 3.2K, `climbing`). Three different kinds of blank,
+  each labelled as what it is.
+- **The Riyadh boundary holds end to end.** An entry stored as
+  `2026-08-16T22:00:00Z` renders as `Mon 17 Aug, 01:00` and files into the week
+  beginning Monday 17 Aug — not the Sunday-16th week a UTC grouping would pick.
+- **`/unfollows` with one day** shows the count, `—` for change, and the real
+  Meta reason string for the missing follows/unfollows breakdown.
+
+### `/opportunities` and `/weekly` are not LLM-generated and not cached
+
+Worth stating plainly because it was assumed otherwise. Neither page makes a
+model call; both are pure SQL over stored rows, recomputed per request at
+10–27 ms locally. There is no regeneration-on-reload risk because there is no
+generation at all.
+
+The only model output anywhere in that chain is the _phrasing_ of pattern
+claims, produced once inside `run_analysis` on the weekly cron and stored in
+`analyses.patterns` — already generate-once-read-many, and with a validated
+deterministic fallback if the model is unavailable.
+
+Known scaling boundary rather than a problem today: `ideas()` and `hotTopics()`
+load the whole competitor post set into memory to compute per-account
+baselines. Fine at the current ~132 posts; would want a SQL rewrite well before
+10k.
+
+---
+
+## v2 — Correction: Opportunities and Weekly are generated, not computed
+
+### What was wrong
+
+Spec 2.8 said Gemini analyses the Post Analytics dataset weekly and returns
+findings citing the posts they came from. It was built as pure SQL. 2.9 wanted
+the same for the weekly narrative.
+
+The likely cause: ruling #2 said to reuse the `analyses` table for
+Opportunities and keep writing `patterns`. That table _was_ v1's deterministic
+pattern pipeline, so reusing it pulled the computation model along with the
+storage. The ruling was about where output lives, not how it is produced.
+
+Recorded because the earlier report identified the discrepancy and filed it as
+a correction to the brief rather than as a deviation from it. Finding that the
+code disagrees with the spec is not, by itself, evidence that the spec is wrong.
+
+### The architecture
+
+**SQL computes, Gemini interprets, code validates, the result is cached.**
+
+None of the SQL was deleted. It stopped being the output and became the input:
+`lib/generate/payload.ts` reuses the analytics queries wholesale, and every
+number that reaches the model was produced by a query.
+
+Gemini never computes a statistic. Models are fluent at arithmetic-shaped prose
+and will produce a plausible median that is simply wrong — the exact class of
+quiet fabrication the rest of this codebase avoids.
+
+### The validator is the guarantee, not the prompt
+
+`lib/generate/validate.ts` extracts every number reachable in the payload,
+plus the roundings a model legitimately produces from them (3241.5 → "3,241",
+"3242"; 0.0412 → "4.1%", "4%"), and drops any insight asserting a figure
+outside that set. Citations are checked the same way: an insight naming a post
+id absent from the payload is unfalsifiable and does not render.
+
+The prompt asks for the same discipline. Both, deliberately — the instruction
+improves the hit rate, the code makes the guarantee. Relying on the prompt
+alone is a request, not a constraint.
+
+The strictest case, and the one the tests pin: `5120 - 900 = 4220` is
+arithmetically correct and still rejected, because SQL never computed it and
+nothing on the page could be traced back to a query.
+
+Dropping rather than caveating is also deliberate. A wrong number with a hedge
+attached is still a wrong number on screen, and the reader cannot tell which
+half to trust.
+
+### Sample floors run before the call
+
+A format below `MIN_FORMAT_SAMPLE` never enters the payload; an account below
+`MIN_MEASURED_POSTS` measured posts skips the call entirely. A model cannot
+caveat its way around thin data it was never given, and asking it to notice
+thin data is asking it to be reliable about the thing it is worst at.
+
+### Caching
+
+Generation runs on the weekly cron and writes to `generations`, keyed by
+Riyadh week. Page loads read cache and never generate — verified: three
+reloads of `/opportunities` produced zero additional `generate_*` runs.
+
+Manual regeneration is capped at 5/day per kind, counted against the `runs`
+ledger rather than stored rows, so a loop of failures still counts. Verified:
+attempts 1–5 return 200, attempt 6 returns 429.
+
+`payload` is stored next to `output` on purpose. It is the evidence the
+generation was validated against; without it a stored insight can never be
+re-checked.
+
+### Fallback
+
+A model failure, a quota exhaustion, or a wholly-invalidated response falls
+back to the deterministic output, labelled **unelaborated** in the UI. Never a
+blank page, never a fabricated one. The figures underneath are always the
+computed ones and are unaffected by whether generation ran.
+
+### Hot Topics took the same path — still outstanding
+
+Confirmed by inspection: zero LLM calls across all eight modules in
+`lib/analytics/`, `topics.ts` included. It is a deterministic hashtag-share
+comparison.
+
+That is a wider gap than Opportunities was, because 2.7 asked for generated
+_concepts_ split by platform — invented territory to explore — and what exists
+measures hashtags that already appeared. The computation model and the subject
+matter both differ, so it is not a matter of wrapping the existing query in a
+generation call. Not fixed here; it needs its own pass against the 2.7 text.

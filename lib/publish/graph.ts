@@ -32,7 +32,7 @@ export function __setGraphFetchForTests(fn: typeof fetch | null): void {
   fetchImpl = fn ?? ((...args) => fetch(...args));
 }
 
-async function call<T>(
+export async function call<T>(
   path: string,
   options: { method?: 'GET' | 'POST'; token: string; params?: Record<string, string> },
 ): Promise<T> {
@@ -149,11 +149,27 @@ export async function publishingLimit(
   }
 }
 
+/**
+ * Scopes v2 needs on the long-lived token. Publishing needed the first three;
+ * insights and comments are new, and a token missing them does not fail — it
+ * quietly returns empty data, which is exactly the failure mode that would
+ * put a believable zero in front of the user. So it is checked explicitly.
+ */
+export const REQUIRED_SCOPES = [
+  'instagram_basic',
+  'instagram_manage_insights',
+  'instagram_manage_comments',
+  'pages_read_engagement',
+  'pages_show_list',
+] as const;
+
 export interface TokenInfo {
   expiresAt: number | null;
   daysRemaining: number | null;
   valid: boolean;
   detail: string;
+  scopes: string[];
+  missingScopes: string[];
 }
 
 export async function inspectToken(token: string): Promise<TokenInfo> {
@@ -168,14 +184,35 @@ export async function inspectToken(token: string): Promise<TokenInfo> {
         ? Math.floor((expiresAt - Math.floor(Date.now() / 1000)) / 86400)
         : null;
 
+    const scopes = result.data.scopes ?? [];
+    // An empty scope list means debug_token didn't report them, not that the
+    // token has none — don't cry wolf over a field the API left out.
+    const missingScopes =
+      scopes.length === 0 ? [] : REQUIRED_SCOPES.filter((s) => !scopes.includes(s));
+
+    const expiryDetail =
+      daysRemaining === null ? 'no expiry reported' : `${daysRemaining} day(s) remaining`;
+
     return {
       expiresAt,
       daysRemaining,
       valid: result.data.is_valid !== false,
-      detail: daysRemaining === null ? 'no expiry reported' : `${daysRemaining} day(s) remaining`,
+      detail:
+        missingScopes.length > 0
+          ? `${expiryDetail}; missing scope(s): ${missingScopes.join(', ')}`
+          : expiryDetail,
+      scopes,
+      missingScopes,
     };
   } catch (error) {
-    return { expiresAt: null, daysRemaining: null, valid: false, detail: (error as Error).message };
+    return {
+      expiresAt: null,
+      daysRemaining: null,
+      valid: false,
+      detail: (error as Error).message,
+      scopes: [],
+      missingScopes: [],
+    };
   }
 }
 

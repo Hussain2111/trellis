@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  biggestGap,
-  computePatterns,
-  predicateForKey,
-  type EnrichedPost,
-} from '../lib/analysis/patterns';
+import { computePatterns, predicateForKey, type EnrichedPost } from '../lib/analysis/patterns';
 
 let nextId = 1;
 function post(overrides: Partial<EnrichedPost>): EnrichedPost {
@@ -81,21 +76,6 @@ describe('computePatterns', () => {
     const competitors = [post({ engagementRate: 0.9 }), post({ engagementRate: 0.8 })];
     const selfPosts = [post({ role: 'self' })];
     expect(computePatterns([...competitors, ...selfPosts]).length).toBeLessThanOrEqual(5);
-  });
-});
-
-describe('biggestGap', () => {
-  it('is the first (largest-delta) pattern', () => {
-    const patterns = computePatterns([
-      post({ engagementRate: 0.9, hasCta: true }),
-      ...Array.from({ length: 3 }, () => post({ engagementRate: 0.01, hasCta: false })),
-      post({ role: 'self', hasCta: false }),
-    ]);
-    expect(biggestGap(patterns)).toBe(patterns[0]);
-  });
-
-  it('is null for an empty pattern list', () => {
-    expect(biggestGap([])).toBeNull();
   });
 });
 

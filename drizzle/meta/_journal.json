@@ -8,6 +8,34 @@
       "when": 1786966326092,
       "tag": "0000_majestic_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787146930885,
+      "tag": "0001_calendar_entries",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787146939682,
+      "tag": "0002_drop_drafts_voice",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787153651244,
+      "tag": "0003_graph_insights",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787207856221,
+      "tag": "0004_generations",
+      "breakpoints": true
     }
   ]
 }

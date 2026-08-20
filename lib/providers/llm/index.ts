@@ -44,6 +44,8 @@ function quotaJobType(operation: string): QuotaJobType {
     'gap_analysis',
     'voice_profile',
     'draft_generation',
+    'generate_opportunities',
+    'generate_weekly',
     'chat',
   ];
   return known.includes(operation as QuotaJobType) ? (operation as QuotaJobType) : 'misc';

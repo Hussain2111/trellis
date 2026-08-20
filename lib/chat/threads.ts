@@ -2,10 +2,8 @@ import { asc, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { accounts, chatMessages, chatThreads, posts } from '../db/schema';
 import { renderChatSystem } from '../prompts/chat-system.v1';
-import { latestAnalysis } from '../analysis/gap';
-import { voiceBlock } from '../analysis/voice';
+import { latestAnalysis, topPattern } from '../analysis/analysis';
 import { selfAccount } from '../ingest/upsert';
-import type { Gap } from '../analysis/patterns';
 
 export async function listThreads() {
   return db().select().from(chatThreads).orderBy(desc(chatThreads.updatedAt));
@@ -53,11 +51,11 @@ export async function titleThread(threadId: number, firstMessage: string): Promi
   await db().update(chatThreads).set({ title }).where(eq(chatThreads.id, threadId));
 }
 
-/** Summary + gap + voice + date. Never the corpus — tools fetch that on demand. */
+/** Summary + top pattern + date. Never the corpus — tools fetch that on demand. */
 export async function buildSystemPrompt(): Promise<string> {
   const self = await selfAccount();
   const analysis = await latestAnalysis();
-  const gap = analysis ? (analysis.gap as Gap) : null;
+  const pattern = analysis ? topPattern(analysis) : null;
 
   const postCount = self
     ? ((
@@ -80,8 +78,7 @@ export async function buildSystemPrompt(): Promise<string> {
     followers: self?.followers ?? null,
     postCount,
     competitorCount,
-    gapClaim: gap ? gap.claim : null,
-    voice: await voiceBlock(),
+    topPatternClaim: pattern ? pattern.claim : null,
     today: new Date().toISOString().slice(0, 10),
   });
 }
