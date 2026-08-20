@@ -62,6 +62,12 @@ Graph API Explorer (<https://developers.facebook.com/tools/explorer/>):
    why Settings checks the token's scopes explicitly and says which are
    missing rather than letting empty data pass as a quiet account.
 
+   Ask for `instagram_content_publish` in the same breath even though
+   auto-publishing is off by default. It is easy to regenerate a token for the
+   two insight scopes, drop this one, and not find out until the day you
+   enable publishing. Settings reports it separately: quietly while publishing
+   is off, loudly once it is on.
+
 3. Generate the token, then exchange it for a long-lived one:
 
 ```

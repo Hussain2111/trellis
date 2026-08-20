@@ -77,8 +77,10 @@ pipeline; everything downstream runs automatically and lands on its own page:
   model tier in a serverless deployment.
 - **Your own data** — the Instagram Graph API, free: posts, per-post insights
   (reach, saves, shares, views), comments, and daily follower counts. Requires
-  `IG_USER_ID` / `IG_ACCESS_TOKEN` with `instagram_manage_insights` and
-  `instagram_manage_comments`; `/settings` names any scope that's missing.
+  `IG_USER_ID` / `IG_ACCESS_TOKEN` carrying all six scopes listed in
+  [`docs/instagram-setup.md`](docs/instagram-setup.md); `/settings` names any
+  that are missing. Migrating from v1? Follow
+  [`docs/cutover.md`](docs/cutover.md) — the order matters.
 - **Competitor data** — Apify, and only for competitors and niche discovery.
   Set `SCRAPE_MODE=fixture` while developing so nothing spends real credit.
   Every scrape is budgeted against `APIFY_MONTHLY_CREDIT_USD` and refused

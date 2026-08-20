@@ -147,6 +147,15 @@ export default async function SettingsPage(): Promise<React.JSX.Element> {
                     read as a quiet account.
                   </p>
                 ) : null}
+                {token.missingPublishingScopes.length > 0 ? (
+                  <p className={e.ENABLE_IG_PUBLISHING ? 'text-negative' : 'text-ink-faint'}>
+                    Missing{' '}
+                    <span className="font-mono">{token.missingPublishingScopes.join(', ')}</span>.
+                    {e.ENABLE_IG_PUBLISHING
+                      ? ' Auto-publishing is ON and will fail without it.'
+                      : ' Only needed if you turn auto-publishing on — but a token regenerated without it will break publishing the day you do.'}
+                  </p>
+                ) : null}
               </div>
             )}
           </div>

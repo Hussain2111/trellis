@@ -215,10 +215,36 @@ describe('inspectToken scope checking', () => {
     expect(info.detail).toMatch(/missing scope/);
   });
 
+  it('reports the publish scope separately from the read scopes', async () => {
+    __setGraphFetchForTests(async () =>
+      jsonResponse({
+        data: {
+          is_valid: true,
+          expires_at: 0,
+          // Every read scope present; the publish one is not.
+          scopes: [
+            'instagram_basic',
+            'instagram_manage_insights',
+            'instagram_manage_comments',
+            'pages_read_engagement',
+            'pages_show_list',
+          ],
+        },
+      }),
+    );
+    const info = await inspectToken('TOK');
+    // Reads are fine, so the headline warning stays quiet...
+    expect(info.missingScopes).toEqual([]);
+    expect(info.detail).not.toMatch(/missing scope/);
+    // ...but publishing would break the day it is switched on.
+    expect(info.missingPublishingScopes).toEqual(['instagram_content_publish']);
+  });
+
   it('does not cry wolf when debug_token omits scopes entirely', async () => {
     __setGraphFetchForTests(async () => jsonResponse({ data: { is_valid: true, expires_at: 0 } }));
     const info = await inspectToken('TOK');
     expect(info.missingScopes).toEqual([]);
+    expect(info.missingPublishingScopes).toEqual([]);
   });
 });
 
