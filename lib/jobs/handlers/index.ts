@@ -2,6 +2,7 @@ import { registerHandler } from '../registry';
 import { classifyHooks } from './classify-hooks';
 import { computeFeatures } from './compute-features';
 import { discoverCompetitors } from './discover-competitors';
+import { generateInsights } from './generate-insights';
 import { publishDue } from './publish-due';
 import { refreshIgToken } from './refresh-ig-token';
 import { runAnalysis } from './run-analysis';
@@ -29,6 +30,7 @@ export function registerJobHandlers(): void {
   registerHandler('run_analysis', runAnalysis);
   registerHandler('sync_own_account', syncOwnAccount);
   registerHandler('weekly_niche', weeklyNiche);
+  registerHandler('generate_insights', generateInsights);
   registerHandler('snapshot_followers', snapshotFollowers);
   registerHandler('publish_due', publishDue);
   registerHandler('refresh_ig_token', refreshIgToken);

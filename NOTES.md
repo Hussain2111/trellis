@@ -1015,3 +1015,94 @@ Known scaling boundary rather than a problem today: `ideas()` and `hotTopics()`
 load the whole competitor post set into memory to compute per-account
 baselines. Fine at the current ~132 posts; would want a SQL rewrite well before
 10k.
+
+---
+
+## v2 — Correction: Opportunities and Weekly are generated, not computed
+
+### What was wrong
+
+Spec 2.8 said Gemini analyses the Post Analytics dataset weekly and returns
+findings citing the posts they came from. It was built as pure SQL. 2.9 wanted
+the same for the weekly narrative.
+
+The likely cause: ruling #2 said to reuse the `analyses` table for
+Opportunities and keep writing `patterns`. That table _was_ v1's deterministic
+pattern pipeline, so reusing it pulled the computation model along with the
+storage. The ruling was about where output lives, not how it is produced.
+
+Recorded because the earlier report identified the discrepancy and filed it as
+a correction to the brief rather than as a deviation from it. Finding that the
+code disagrees with the spec is not, by itself, evidence that the spec is wrong.
+
+### The architecture
+
+**SQL computes, Gemini interprets, code validates, the result is cached.**
+
+None of the SQL was deleted. It stopped being the output and became the input:
+`lib/generate/payload.ts` reuses the analytics queries wholesale, and every
+number that reaches the model was produced by a query.
+
+Gemini never computes a statistic. Models are fluent at arithmetic-shaped prose
+and will produce a plausible median that is simply wrong — the exact class of
+quiet fabrication the rest of this codebase avoids.
+
+### The validator is the guarantee, not the prompt
+
+`lib/generate/validate.ts` extracts every number reachable in the payload,
+plus the roundings a model legitimately produces from them (3241.5 → "3,241",
+"3242"; 0.0412 → "4.1%", "4%"), and drops any insight asserting a figure
+outside that set. Citations are checked the same way: an insight naming a post
+id absent from the payload is unfalsifiable and does not render.
+
+The prompt asks for the same discipline. Both, deliberately — the instruction
+improves the hit rate, the code makes the guarantee. Relying on the prompt
+alone is a request, not a constraint.
+
+The strictest case, and the one the tests pin: `5120 - 900 = 4220` is
+arithmetically correct and still rejected, because SQL never computed it and
+nothing on the page could be traced back to a query.
+
+Dropping rather than caveating is also deliberate. A wrong number with a hedge
+attached is still a wrong number on screen, and the reader cannot tell which
+half to trust.
+
+### Sample floors run before the call
+
+A format below `MIN_FORMAT_SAMPLE` never enters the payload; an account below
+`MIN_MEASURED_POSTS` measured posts skips the call entirely. A model cannot
+caveat its way around thin data it was never given, and asking it to notice
+thin data is asking it to be reliable about the thing it is worst at.
+
+### Caching
+
+Generation runs on the weekly cron and writes to `generations`, keyed by
+Riyadh week. Page loads read cache and never generate — verified: three
+reloads of `/opportunities` produced zero additional `generate_*` runs.
+
+Manual regeneration is capped at 5/day per kind, counted against the `runs`
+ledger rather than stored rows, so a loop of failures still counts. Verified:
+attempts 1–5 return 200, attempt 6 returns 429.
+
+`payload` is stored next to `output` on purpose. It is the evidence the
+generation was validated against; without it a stored insight can never be
+re-checked.
+
+### Fallback
+
+A model failure, a quota exhaustion, or a wholly-invalidated response falls
+back to the deterministic output, labelled **unelaborated** in the UI. Never a
+blank page, never a fabricated one. The figures underneath are always the
+computed ones and are unaffected by whether generation ran.
+
+### Hot Topics took the same path — still outstanding
+
+Confirmed by inspection: zero LLM calls across all eight modules in
+`lib/analytics/`, `topics.ts` included. It is a deterministic hashtag-share
+comparison.
+
+That is a wider gap than Opportunities was, because 2.7 asked for generated
+_concepts_ split by platform — invented territory to explore — and what exists
+measures hashtags that already appeared. The computation model and the subject
+matter both differ, so it is not a matter of wrapping the existing query in a
+generation call. Not fixed here; it needs its own pass against the 2.7 text.

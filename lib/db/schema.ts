@@ -369,6 +369,57 @@ export const calendarEntries = pgTable(
   (t) => [index('calendar_entries_due_idx').on(t.status, t.scheduledFor)],
 );
 
+// --- generations (Gemini's interpretation layer, cached per week) ------------
+
+/**
+ * SQL computes every number; Gemini interprets them. This table holds the
+ * interpretation.
+ *
+ * Cached per Riyadh week and written by the weekly cron, never on a page load.
+ * A model call per request would burn the Gemini free-tier rate limit and make
+ * a page view cost something, which the $0/month constraint does not allow.
+ *
+ * `payload` is stored alongside `output` deliberately: it is the evidence the
+ * generation was validated against, and without it a stored insight cannot be
+ * re-checked later.
+ */
+export const generations = pgTable(
+  'generations',
+  {
+    id: serial('id').primaryKey(),
+    kind: text('kind', { enum: ['opportunities', 'weekly'] }).notNull(),
+    /** Monday of the Riyadh week this covers, `YYYY-MM-DD`. */
+    weekStart: text('week_start').notNull(),
+    /** Exactly what was sent to the model — every figure in it computed in SQL. */
+    payload: jsonb('payload').notNull(),
+    /**
+     * The validated result, with anything that failed validation already
+     * stripped. Nullable: a fallback row records that generation was attempted
+     * and what went wrong, and has no output to store.
+     */
+    output: jsonb('output'),
+    /**
+     * `ok` = the model ran and its output survived validation.
+     * `fallback` = the model failed, was out of quota, or produced nothing
+     * that validated; the deterministic output is what renders, labelled.
+     */
+    status: text('status', { enum: ['ok', 'fallback'] })
+      .notNull()
+      .default('ok'),
+    /** What validation stripped and why. Kept so a thin result is explainable. */
+    validationNotes: jsonb('validation_notes')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    generatedBy: text('generated_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+  },
+  (t) => [
+    uniqueIndex('generations_kind_week_uq').on(t.kind, t.weekStart),
+    index('generations_created_idx').on(t.createdAt),
+  ],
+);
+
 // --- chat --------------------------------------------------------------------
 
 export const chatThreads = pgTable('chat_threads', {
@@ -491,3 +542,5 @@ export type NewPostInsight = typeof postInsights.$inferInsert;
 export type PostComment = typeof postComments.$inferSelect;
 export type FollowerDaily = typeof followerDaily.$inferSelect;
 export type FollowerSnapshot = typeof followerSnapshots.$inferSelect;
+export type Generation = typeof generations.$inferSelect;
+export type NewGeneration = typeof generations.$inferInsert;

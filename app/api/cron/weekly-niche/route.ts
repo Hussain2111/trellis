@@ -21,6 +21,10 @@ export async function GET(request: Request): Promise<Response> {
   registerJobHandlers();
   await enqueue('weekly_niche', {}, { dedupe: true });
   await enqueue('run_analysis', { windowDays: 30 }, { dedupe: true });
+  // The interpretation pass reads the analysis this run produces, so it is
+  // queued behind it at lower priority rather than run inline. The 10-minute
+  // pipeline tick carries it once the analysis lands.
+  await enqueue('generate_insights', {}, { dedupe: true, priority: -10 });
   const result = await runTick(['weekly_niche'], 8_000);
   return Response.json(result);
 }

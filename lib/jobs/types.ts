@@ -41,6 +41,13 @@ export const jobPayloads = {
   weekly_niche: z.object({
     cooldownDays: z.number().int().positive().default(7),
   }),
+  /**
+   * Gemini's interpretation pass over the SQL-computed analytics. Runs from
+   * the weekly cron; page loads read the cache and never generate.
+   */
+  generate_insights: z.object({
+    kinds: z.array(z.enum(['opportunities', 'weekly'])).default(['opportunities', 'weekly']),
+  }),
   /** Manual, Apify-billed follower snapshot for the Unfollows diff. */
   snapshot_followers: z.object({
     accountId: z.number().int(),
