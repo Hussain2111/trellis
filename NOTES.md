@@ -1210,3 +1210,81 @@ The dashboard consolidation belongs on that list too: `/tracker`, `/audience`
 and `/unfollows` were folded in as sections rather than kept as tabs, and if
 any of them turns out to need more room than a section gives it, bringing it
 back is a small change.
+
+---
+
+## v2 — first live Graph API contact: a seventh scope, and a version being upgraded underneath us
+
+### `business_management` is required, and its absence is silent
+
+With six scopes, `GET /me/accounts` returned `{"data": []}` while
+`GET /me?fields=id,name` returned the correct profile. The token was valid and
+belonged to the right user; the Page list was simply empty. Nothing errored.
+Adding `business_management` and regenerating returned the Page.
+
+That failure mode is the finding. A missing permission presenting as an empty
+collection rather than an error is the same class as every other quiet-zero
+problem this build guards against — an empty array looks like an answer.
+
+Now in `REQUIRED_SCOPES`. Two nuances worth recording:
+
+- The app **never calls `/me/accounts`** — it reads a configured `IG_USER_ID`.
+  So the scope is proven necessary for _discovering_ the Page during setup and
+  unproven for the ongoing reads. It goes in `REQUIRED_SCOPES` anyway: the cost
+  of requiring a scope you did not need is nothing, the cost of a regenerated
+  token missing it is a setup you cannot repeat.
+- `granular_scopes` showed `pages_show_list` and `pages_read_engagement`
+  targeted at the Page id, and `business_management` with no target, on an
+  account holding four business portfolios none of which was connected to the
+  app. Whether the requirement is universal or an artefact of portfolio
+  ownership is open, and it matters at multi-tenancy.
+
+### The API version the app asks for is not the one it gets
+
+Requests to `v21.0` came back with `v26.0` in every response URL. Meta
+upgrades calls to a retired version without saying so — which is precisely how
+a renamed metric (`impressions` → `views`, `plays` folded into it) turns real
+engagement into nulls with nothing noticing, since the per-metric retry path
+cannot fire on a rename it does not know happened.
+
+The version is now one env-driven constant (`GRAPH_API_VERSION`) behind
+`call()`, so reads and writes cannot drift apart, and `/settings` prints what
+is being requested so it can be compared against a probe response.
+`scripts/probe-graph.ts` reads the same variable but keeps its own default: a
+probe that imports the app's constants can only ever confirm them.
+
+### What the probe got wrong, and why that is worse than a missed finding
+
+It marked `thumbnail_url` ABSENT off `rows[0]`, a carousel. A reel in the same
+response carried it. The real rule is type-conditional — served for
+`VIDEO`/`REELS`, omitted for `CAROUSEL_ALBUM`/`IMAGE`, which carry `media_url`.
+
+The mapper was already right (`thumbnail_url ?? media_url ?? null`). The probe
+was not. It now samples one item per media type before reaching a verdict, and
+reports "type-conditional: on X; not on Y" as its own outcome — plus an
+explicit finding naming the media types absent from the page entirely, so
+UNPROBED is never mistaken for clean. A probe that cries wolf gets discounted,
+and then the next real finding gets waved through with it.
+
+### What did not go wrong
+
+Reel and carousel both return all seven media metrics with identical shapes and
+`period: lifetime`. The batched request succeeds for both and **the per-metric
+retry path never fired**. Format-divergence was the risk the whole retry
+mechanism was built around; it is not real at this version. The path stays as
+insurance against future drift — but as insurance, stated, rather than as an
+open worry.
+
+`shortcode` is present, so the join back to the v1-scraped `posts` rows holds.
+Worth remembering that `lib/insights/graph.ts` **drops a media item entirely**
+when shortcode resolves to null, so a type that omits it would lose posts
+rather than store them incomplete. No image posts exist on the account, so that
+type is unprobed.
+
+### A post five months old returned full lifetime insights
+
+`docs/roadmap.md` at `c131042` stated flatly that Graph insights do not
+backfill and that v1-scraped posts never would have reach data. A post dated
+`2026-03-29` returned reach 128, views 144, saved 1. The claim is withdrawn;
+where the lookback actually ends is now the highest-value open question in the
+project, because it decides whether the chat reasons from twenty posts or two.

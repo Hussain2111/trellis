@@ -113,15 +113,21 @@ async function probeToken(): Promise<void> {
     res.body as { data?: { scopes?: string[]; is_valid?: boolean; expires_at?: number } }
   )?.data;
   const scopes = data?.scopes ?? [];
+  // Deliberately a hand-maintained copy of REQUIRED_SCOPES rather than an
+  // import: this probe exists to disagree with the app, and a probe that
+  // shares the app's constants can only ever confirm them.
   const required = [
     'instagram_basic',
     'instagram_manage_insights',
     'instagram_manage_comments',
     'pages_read_engagement',
     'pages_show_list',
+    // Without this one /me/accounts returns an empty list rather than an
+    // error, so the Page never appears and nothing says why.
+    'business_management',
   ];
-  // Sixth scope: only the auto-publish path uses it, but a token regenerated
-  // for the insight scopes and missing this one breaks publishing silently.
+  // Only the auto-publish path uses this, but a token regenerated for the
+  // insight scopes and missing it breaks publishing silently.
   const publishing = ['instagram_content_publish'];
 
   for (const scope of [...required, ...publishing]) {
@@ -231,18 +237,56 @@ async function probeMedia(): Promise<MediaRow[]> {
   const rows = ((res.body as { data?: MediaRow[] })?.data ?? []) as MediaRow[];
   const first = rows[0];
 
+  // One item per media type, not just the newest item. Fields on this edge are
+  // type-conditional — `thumbnail_url` is served for VIDEO/REELS and omitted
+  // for CAROUSEL_ALBUM/IMAGE, which carry `media_url` instead — so inspecting
+  // rows[0] alone reports ABSENT for a field that is present two rows down.
+  // That false negative is worse than silence: a probe that cries wolf gets
+  // discounted, and the next real finding gets waved through with it.
+  const byType = new Map<string, MediaRow>();
+  for (const row of rows) {
+    const key = `${row.media_type ?? 'unknown'}/${row.media_product_type ?? 'unknown'}`;
+    if (!byType.has(key)) byType.set(key, row);
+  }
+  const samples = [...byType.entries()];
+
   for (const field of MEDIA_FIELDS) {
     const key = field.replace(/\{.*\}$/, '');
-    const present = first ? key in first : false;
+    const carriers = samples.filter(([, row]) => key in row);
+    const missing = samples.filter(([, row]) => !(key in row));
+
+    let verdict: Verdict;
+    let detail: string;
+    if (!first) {
+      verdict = 'empty';
+      detail = 'no media returned';
+    } else if (carriers.length === 0) {
+      verdict = 'absent';
+      detail = `not served for any of ${samples.map(([t]) => t).join(', ')}`;
+    } else if (missing.length === 0) {
+      verdict = 'present';
+      detail = String(carriers[0]![1][key]).slice(0, 60);
+    } else {
+      // Present on some types and not others. This is a real answer, not a
+      // failure — record which, because the mapper has to branch on it.
+      verdict = 'present';
+      detail = `type-conditional: on ${carriers.map(([t]) => t).join(', ')}; not on ${missing
+        .map(([t]) => t)
+        .join(', ')}`;
+    }
+
+    findings.push({ section: 'media edge', name: key, verdict, detail });
+  }
+
+  const unseen = ['IMAGE', 'CAROUSEL_ALBUM', 'VIDEO'].filter(
+    (t) => !samples.some(([k]) => k.startsWith(`${t}/`)),
+  );
+  if (unseen.length > 0) {
     findings.push({
       section: 'media edge',
-      name: key,
-      verdict: !first ? 'empty' : present ? 'present' : 'absent',
-      detail: !first
-        ? 'no media returned'
-        : present
-          ? String(first[key]).slice(0, 60)
-          : 'not in response',
+      name: 'media type coverage',
+      verdict: 'empty',
+      detail: `no ${unseen.join(', ')} in this page of media — those types are UNPROBED, not clean`,
     });
   }
 

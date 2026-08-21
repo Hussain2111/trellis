@@ -228,6 +228,7 @@ describe('inspectToken scope checking', () => {
             'instagram_manage_comments',
             'pages_read_engagement',
             'pages_show_list',
+            'business_management',
           ],
         },
       }),
@@ -238,6 +239,34 @@ describe('inspectToken scope checking', () => {
     expect(info.detail).not.toMatch(/missing scope/);
     // ...but publishing would break the day it is switched on.
     expect(info.missingPublishingScopes).toEqual(['instagram_content_publish']);
+  });
+
+  it('names business_management, whose absence is otherwise silent', async () => {
+    // Verified against a live token: with the other six scopes,
+    // GET /me/accounts returns `{"data": []}` while GET /me returns the right
+    // profile. Nothing errors — the Page list is simply empty, which reads as
+    // "administers no Pages" rather than "token is short a permission". The
+    // scope check is the only thing that can say which it is.
+    __setGraphFetchForTests(async () =>
+      jsonResponse({
+        data: {
+          is_valid: true,
+          expires_at: 0,
+          scopes: [
+            'instagram_basic',
+            'instagram_manage_insights',
+            'instagram_manage_comments',
+            'pages_read_engagement',
+            'pages_show_list',
+            'instagram_content_publish',
+          ],
+        },
+      }),
+    );
+    const info = await inspectToken('TOK');
+    expect(info.missingScopes).toEqual(['business_management']);
+    expect(info.missingPublishingScopes).toEqual([]);
+    expect(info.detail).toMatch(/business_management/);
   });
 
   it('does not cry wolf when debug_token omits scopes entirely', async () => {

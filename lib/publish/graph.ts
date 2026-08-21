@@ -1,3 +1,4 @@
+import { env } from '../env';
 import { recordRun } from '../runs/log';
 
 /**
@@ -10,7 +11,14 @@ import { recordRun } from '../runs/log';
  * media_type=CAROUSEL.
  */
 
-const GRAPH = 'https://graph.facebook.com/v21.0';
+/**
+ * The single place the Graph API version is chosen, for reads and writes
+ * alike — `lib/insights/graph.ts` routes through `call()` and has no version
+ * of its own. `scripts/probe-graph.ts` reads the same `GRAPH_API_VERSION`
+ * variable but keeps its own default on purpose: a probe that imports the
+ * app's constants can only ever confirm them.
+ */
+const graphBase = (): string => `https://graph.facebook.com/${env().GRAPH_API_VERSION}`;
 
 export class GraphError extends Error {
   readonly status: number;
@@ -36,7 +44,7 @@ export async function call<T>(
   path: string,
   options: { method?: 'GET' | 'POST'; token: string; params?: Record<string, string> },
 ): Promise<T> {
-  const url = new URL(`${GRAPH}/${path}`);
+  const url = new URL(`${graphBase()}/${path}`);
   const body = new URLSearchParams({ access_token: options.token, ...(options.params ?? {}) });
 
   const res =
@@ -161,6 +169,14 @@ export const REQUIRED_SCOPES = [
   'instagram_manage_comments',
   'pages_read_engagement',
   'pages_show_list',
+  // Verified live: without this, `GET /me/accounts` returns `{"data": []}`
+  // rather than an error — indistinguishable from "this user administers no
+  // Pages". The setup step that discovers IG_USER_ID cannot be repeated
+  // without it. Whether the ongoing insight reads need it is unproven (this
+  // app never calls /me/accounts once IG_USER_ID is configured), but the cost
+  // of requiring a scope you turned out not to need is nothing, and the cost
+  // of a regenerated token missing it is a setup you cannot redo.
+  'business_management',
 ] as const;
 
 /**

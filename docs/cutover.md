@@ -22,7 +22,7 @@ The order below is not arbitrary. Two things make it matter:
 
 ## Free and reversible — do these any time
 
-### 1. Regenerate the Instagram token with all six scopes
+### 1. Regenerate the Instagram token with all seven scopes
 
 ```
 instagram_basic
@@ -31,7 +31,12 @@ instagram_manage_comments      ← new in v2
 instagram_content_publish      ← auto-publish; ask for it even though it's off
 pages_read_engagement
 pages_show_list
+business_management            ← without it /me/accounts returns an empty list
 ```
+
+That last one fails silently and is the reason this list is seven long. With
+six scopes the Page simply does not appear, which reads as "you administer no
+Pages" rather than "your token is short a permission".
 
 Put it in your **local `.env`** first, not Vercel. Nothing reads it there but
 the probes.
@@ -97,7 +102,7 @@ Then in Vercel, in the same sitting:
 
 | Action  | Variable                                                                                                      |
 | ------- | ------------------------------------------------------------------------------------------------------------- |
-| update  | `IG_ACCESS_TOKEN` (the six-scope one)                                                                         |
+| update  | `IG_ACCESS_TOKEN` (the seven-scope one)                                                                       |
 | confirm | `IG_USER_ID`, `IG_HANDLE`, `LLM_PROVIDER=google`                                                              |
 | add     | `CRON_SECRET`                                                                                                 |
 | delete  | `IMAGE_PROVIDER`, `GOOGLE_MODEL_LITE`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET` |

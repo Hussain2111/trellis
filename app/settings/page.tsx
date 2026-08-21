@@ -139,6 +139,13 @@ export default async function SettingsPage(): Promise<React.JSX.Element> {
             ) : (
               <div className="space-y-1.5">
                 <p className="text-ink-muted">{token.detail}</p>
+                <p className="text-ink-faint">
+                  Requesting API <span className="font-mono">{e.GRAPH_API_VERSION}</span>. Meta will
+                  silently serve a newer version against a retired one, and a renamed metric is how
+                  real engagement turns into nulls — compare this against the version in a{' '}
+                  <span className="font-mono">probe:graph</span> response before trusting a sudden
+                  change in the numbers.
+                </p>
                 {token.missingScopes.length > 0 ? (
                   <p className="text-negative">
                     Regenerate the token with{' '}

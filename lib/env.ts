@@ -41,6 +41,16 @@ export const envSchema = z.object({
   APIFY_WEBHOOK_SECRET: z.string().optional(),
 
   // --- Instagram (Graph API publishing) --------------------------------------
+  // Pinned deliberately, and surfaced on /settings. Verified live: requests
+  // sent to v21.0 came back with v26.0 in every response URL — Meta silently
+  // upgrades calls to a retired version. That is exactly how a renamed metric
+  // (`impressions` → `views`, `plays` folded into it) turns real engagement
+  // into nulls without anything noticing, so the version the app asks for and
+  // the version it gets need to be comparable at a glance.
+  GRAPH_API_VERSION: z
+    .string()
+    .regex(/^v\d+\.\d+$/)
+    .default('v21.0'),
   IG_HANDLE: z.string().optional(),
   IG_USER_ID: z.string().optional(),
   IG_ACCESS_TOKEN: z.string().optional(),

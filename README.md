@@ -81,7 +81,7 @@ pipeline; everything downstream runs automatically and lands on its own page:
   model tier in a serverless deployment.
 - **Your own data** — the Instagram Graph API, free: posts, per-post insights
   (reach, saves, shares, views), comments, and daily follower counts. Requires
-  `IG_USER_ID` / `IG_ACCESS_TOKEN` carrying all six scopes listed in
+  `IG_USER_ID` / `IG_ACCESS_TOKEN` carrying all seven scopes listed in
   [`docs/instagram-setup.md`](docs/instagram-setup.md); `/settings` names any
   that are missing. Migrating from v1? Follow
   [`docs/cutover.md`](docs/cutover.md) — the order matters.

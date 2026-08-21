@@ -45,7 +45,7 @@ Accept the invitation from <https://developers.facebook.com/settings/developer/r
 Graph API Explorer (<https://developers.facebook.com/tools/explorer/>):
 
 1. Select your app.
-2. Permissions — all six, not just the publishing ones:
+2. Permissions — all seven, not just the publishing ones:
 
    | Permission                  | What breaks without it                       |
    | --------------------------- | -------------------------------------------- |
@@ -55,6 +55,14 @@ Graph API Explorer (<https://developers.facebook.com/tools/explorer/>):
    | `instagram_content_publish` | Auto-publishing (optional — off by default)  |
    | `pages_show_list`           | Finding the linked Page                      |
    | `pages_read_engagement`     | Reading the Page → Instagram link            |
+   | `business_management`       | The Page appearing in `/me/accounts` at all  |
+
+   `business_management` is the one that costs a debugging session if it is
+   missing. Verified against a live token: without it, `GET /me/accounts`
+   returns `{"data": []}` while `GET /me?fields=id,name` returns the correct
+   profile — so the token is valid, belongs to the right person, and simply
+   reports that they administer no Pages. Nothing errors. Add it and the Page
+   appears immediately.
 
    The two `manage_*` permissions are new in v2 and are the ones most likely
    to be missing on a token generated for v1. A token without them does not
