@@ -17,7 +17,11 @@ the voice profile, the single-headline-gap framing) in favour of measurement
 only used for competitors and niche discovery.
 
 v2 is complete: the removals, the `drafts`+`schedule` → `calendar_entries`
-migration, the Graph API insights layer, and all ten analytics views. See
+migration, the Graph API insights layer, and all ten analytics views. It has
+not been deployed — `main` still runs v1. See
+[`docs/roadmap.md`](docs/roadmap.md) for where the project stands as an
+operated system and what is left to do,
+[`docs/cutover.md`](docs/cutover.md) for the mechanical steps, and
 [`NOTES.md`](NOTES.md) for the migration log, real bugs found in production,
 and deliberate deviations.
 
