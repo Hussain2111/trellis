@@ -2,6 +2,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { APICallError, type LanguageModel } from 'ai';
 import { env } from '../env';
+import { diagnosticFetch } from './diagnostics';
 
 /**
  * The only module in this codebase that names a model.
@@ -92,7 +93,7 @@ const PROVIDERS: Record<string, (ref: ModelRef) => LanguageModel> = {
   google: (ref) => {
     const key = env().GOOGLE_GENERATIVE_AI_API_KEY;
     if (!key) throw new ModelUnavailable('google', 'GOOGLE_GENERATIVE_AI_API_KEY is not set');
-    return createGoogleGenerativeAI({ apiKey: key })(ref.modelId);
+    return createGoogleGenerativeAI({ apiKey: key, fetch: diagnosticFetch })(ref.modelId);
   },
 
   ...Object.fromEntries(
@@ -101,7 +102,12 @@ const PROVIDERS: Record<string, (ref: ModelRef) => LanguageModel> = {
       (ref: ModelRef) => {
         const key = process.env[lane.keyName];
         if (!key) throw new ModelUnavailable(name, `${lane.keyName} is not set`);
-        return createOpenAICompatible({ name, baseURL: lane.baseURL, apiKey: key })(ref.modelId);
+        return createOpenAICompatible({
+          name,
+          baseURL: lane.baseURL,
+          apiKey: key,
+          fetch: diagnosticFetch,
+        })(ref.modelId);
       },
     ]),
   ),

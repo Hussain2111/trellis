@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { generateText, tool } from 'ai';
+import { describe, expect, it, vi } from 'vitest';
+import { chatTools } from '../lib/chat/tools';
+vi.mock('../lib/chat/queries', () => ({ postsRanked: async () => ({ reach: 1248 }) }));
+import { generateText } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { z } from 'zod';
 import { chatGenerationOptions, validateChatAnswer } from '../lib/chat/generation';
 
 /** Real installed adapter, mocked HTTP only: no free-tier inference. */
 describe('Groq OpenAI-compatible tool loop', () => {
-  it.each(['1248 views.', '99999 views.'])(
+  it.each(['1248 accounts reached.', '99999 accounts reached.'])(
     'validates %s against SQL tool evidence',
     async (answer) => {
       const requests: Record<string, unknown>[] = [];
@@ -18,6 +19,12 @@ describe('Groq OpenAI-compatible tool loop', () => {
           expect(String(url)).toBe('https://api.groq.com/openai/v1/chat/completions');
           const body = JSON.parse(String(options?.body));
           requests.push(body);
+          expect(body.tools).toHaveLength(8);
+          expect(body.temperature).toBe(0.4);
+          const schema = body.tools.find(
+            (t: { function: { name: string } }) => t.function.name === 'getPostsRanked',
+          ).function.parameters;
+          expect(schema.properties.metric.enum).toContain('reach');
           const final = body.tool_choice === 'none';
           return Response.json({
             id: 'test',
@@ -37,7 +44,10 @@ describe('Groq OpenAI-compatible tool loop', () => {
                         {
                           id: 'lookup',
                           type: 'function',
-                          function: { name: 'getPostsRanked', arguments: '{}' },
+                          function: {
+                            name: 'getPostsRanked',
+                            arguments: '{"metric":"reach","limit":10,"sinceDays":180}',
+                          },
                         },
                       ],
                     },
@@ -47,9 +57,7 @@ describe('Groq OpenAI-compatible tool loop', () => {
           });
         },
       });
-      const tools = {
-        getPostsRanked: tool({ inputSchema: z.object({}), execute: async () => ({ views: 1248 }) }),
-      };
+      const tools = chatTools(1);
       const result = await generateText({
         model: groq('openai/gpt-oss-120b'),
         tools,
@@ -60,6 +68,7 @@ describe('Groq OpenAI-compatible tool loop', () => {
         ],
         ...chatGenerationOptions<typeof tools>(2, 'Use evidence.'),
         maxRetries: 0,
+        temperature: 0.4,
       });
       expect(requests).toHaveLength(2);
       expect(requests[0]).toMatchObject({ model: 'openai/gpt-oss-120b', tool_choice: 'required' });
@@ -69,7 +78,7 @@ describe('Groq OpenAI-compatible tool loop', () => {
         result.text,
         result.steps.flatMap((step) => step.toolResults.map((r) => r.output)),
       );
-      expect(validated.dropped).toHaveLength(answer === '1248 views.' ? 0 : 1);
+      expect(validated.dropped).toHaveLength(answer === '1248 accounts reached.' ? 0 : 1);
       expect(result.totalUsage.inputTokens).toBe(20);
     },
   );

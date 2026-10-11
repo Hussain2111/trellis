@@ -1,10 +1,12 @@
 import { generateText } from 'ai';
+import { randomUUID } from 'node:crypto';
+import { safeException, withProviderAttempt, type ProviderAttempt } from '@/lib/model/diagnostics';
 import { respond } from '@/lib/api/respond';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { modelRuns } from '@/lib/db/schema';
 import { chatTools } from '@/lib/chat/tools';
-import { count, measure, requestId, startStage } from '@/lib/performance/server';
+import { count, measure, startStage } from '@/lib/performance/server';
 import {
   appendChatTurn,
   buildSystemPrompt,
@@ -44,6 +46,18 @@ const bodySchema = z.object({
  * defeat the point. Tool progress could stream; the answer cannot.
  */
 export async function POST(request: Request): Promise<Response> {
+  const incomingId = request.headers.get('x-trellis-request-id');
+  const correlationId =
+    incomingId &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(incomingId)
+      ? incomingId
+      : randomUUID();
+  const vercelId = request.headers.get('x-vercel-id');
+  const vercelRequestId =
+    vercelId && /^[a-zA-Z0-9:._-]{1,160}$/.test(vercelId) ? vercelId : undefined;
+  const headers = new Headers(request.headers);
+  headers.set('x-trellis-request-id', correlationId);
+  request = new Request(request, { headers });
   const handler = async () => {
     const finishPreflight = startStage('preflight');
     const parsed = bodySchema.safeParse(await request.json());
@@ -144,50 +158,60 @@ export async function POST(request: Request): Promise<Response> {
       const toolTimers = new Map<string, (failed?: boolean) => void>();
       const maxSteps = Math.min(maxStepsFor(caps), headroom.limit - headroom.used);
       let result;
+      const attempt: ProviderAttempt = {
+        stage: 'provider_preparation',
+        httpRequestAttempted: false,
+      };
       try {
         finishPreflight();
-        result = await generateText({
-          model: model.model,
-          system,
-          messages,
-          tools,
-          // Every step is another provider request, so the ceiling is derived
-          // from the per-minute limit rather than picked. A fixed 8 blew a
-          // 5-a-minute budget from inside a single call, where no pre-flight
-          // check can reach.
-          ...chatGenerationOptions<typeof tools>(maxSteps, system),
-          onLanguageModelCallStart: ({ callId }) => {
-            attemptedCalls += 1;
-            count('modelCalls');
-            modelTimers.set(callId, startStage('model'));
-          },
-          onLanguageModelCallEnd: ({ callId, usage }) => {
-            modelTimers.get(callId)?.();
-            modelTimers.delete(callId);
-            count('inputTokens', usage.inputTokens ?? 0);
-            count('outputTokens', usage.outputTokens ?? 0);
-          },
-          onToolExecutionStart: ({ toolCall }) => {
-            toolTimers.set(toolCall.toolCallId, startStage('tool'));
-          },
-          onToolExecutionEnd: ({ toolCall, toolOutput }) => {
-            toolTimers.get(toolCall.toolCallId)?.(toolOutput.type === 'tool-error');
-            toolTimers.delete(toolCall.toolCallId);
-          },
-          onStepEnd: (step) => {
-            console.info('[chat.step]', {
-              requestId: requestId(),
-              threadId,
-              provider: model.provider,
-              ...chatStepDiagnostic(step),
-            });
-          },
-          // The SDK's default is three attempts. On a quota error that spends
-          // three of the five requests a minute allows, on a call that could not
-          // have succeeded — so retrying is handled here, by not doing it.
-          maxRetries: 0,
-          temperature: 0.4,
-        });
+        result = await withProviderAttempt(attempt, () =>
+          generateText({
+            model: model.model,
+            system,
+            messages,
+            tools,
+            // Every step is another provider request, so the ceiling is derived
+            // from the per-minute limit rather than picked. A fixed 8 blew a
+            // 5-a-minute budget from inside a single call, where no pre-flight
+            // check can reach.
+            ...chatGenerationOptions<typeof tools>(maxSteps, system),
+            onLanguageModelCallStart: ({ callId }) => {
+              attempt.stage = 'provider_preparation';
+              attempt.httpRequestAttempted = false;
+              attempt.httpStatus = undefined;
+              attemptedCalls += 1;
+              count('modelCalls');
+              modelTimers.set(callId, startStage('model'));
+            },
+            onLanguageModelCallEnd: ({ callId, usage }) => {
+              modelTimers.get(callId)?.();
+              modelTimers.delete(callId);
+              count('inputTokens', usage.inputTokens ?? 0);
+              count('outputTokens', usage.outputTokens ?? 0);
+            },
+            onToolExecutionStart: ({ toolCall }) => {
+              attempt.stage = 'tool_execution';
+              toolTimers.set(toolCall.toolCallId, startStage('tool'));
+            },
+            onToolExecutionEnd: ({ toolCall, toolOutput }) => {
+              toolTimers.get(toolCall.toolCallId)?.(toolOutput.type === 'tool-error');
+              toolTimers.delete(toolCall.toolCallId);
+            },
+            onStepEnd: (step) => {
+              console.info('[chat.step]', {
+                requestId: correlationId,
+                threadId,
+                provider: model.provider,
+                ...chatStepDiagnostic(step),
+              });
+            },
+            // The SDK's default is three attempts. On a quota error that spends
+            // three of the five requests a minute allows, on a call that could not
+            // have succeeded — so retrying is handled here, by not doing it.
+            maxRetries: 0,
+            temperature: 0.4,
+          }),
+        );
         // SDK lifecycle callbacks swallow exceptions; stopWhen halts the loop,
         // and this check prevents treating failed SQL/tool execution as an answer.
         if (result.steps.some((step) => step.content.some((part) => part.type === 'tool-error'))) {
@@ -197,6 +221,19 @@ export async function POST(request: Request): Promise<Response> {
         for (const finish of modelTimers.values()) finish(true);
         for (const finish of toolTimers.values()) finish(true);
         const failure = classifyProviderFailure(error);
+        console.error('[chat.failure]', {
+          requestId: correlationId,
+          vercelRequestId,
+          provider: model.provider,
+          model: model.modelId,
+          failureStage: attempt.stage,
+          classification: failure,
+          ...safeException(error),
+          httpStatus: safeException(error).httpStatus ?? attempt.httpStatus,
+          httpRequestAttempted: attempt.httpRequestAttempted,
+          fallbackSelected: model.isFallback,
+          elapsedMs: Math.max(0, Date.now() - started),
+        });
         const quota = failure === 'quota' ? asQuotaError(error) : null;
 
         await measure('persistence', () =>
@@ -265,7 +302,7 @@ export async function POST(request: Request): Promise<Response> {
         validateChatAnswer(result.text, evidence);
       finishValidation();
       console.info('[chat.response]', {
-        requestId: requestId(),
+        requestId: correlationId,
         threadId,
         provider: model.provider,
         steps: result.steps.length,
@@ -289,7 +326,7 @@ export async function POST(request: Request): Promise<Response> {
         );
       } catch {
         console.info('[chat.persistence]', {
-          requestId: requestId(),
+          requestId: correlationId,
           threadId,
           provider: model.provider,
           generationOutcome: 'ok',
@@ -343,11 +380,13 @@ export async function POST(request: Request): Promise<Response> {
       },
     );
   };
-  return respond(
+  const response = await respond(
     handler,
     { route: '/api/chat', request },
     'Chat could not answer right now. Please try again later.',
   );
+  response.headers.set('x-trellis-request-id', correlationId);
+  return response;
 }
 
 /** Seconds are the right unit for a minute and the wrong one for eleven hours. */
