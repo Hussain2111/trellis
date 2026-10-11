@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { APICallError } from 'ai';
 import {
   asQuotaError,
   checkHeadroom,
@@ -272,8 +273,55 @@ describe('lanes', () => {
   });
 
   it('names what it knows when asked for a provider it does not', () => {
-    withEnv({ MODEL_PRIMARY: 'anthropic:claude' }, () => {
-      expect(() => resolveLanes()).toThrow(/Known: /);
-    });
+    withEnv(
+      {
+        MODEL_PRIMARY: 'anthropic:claude',
+        MODEL_FALLBACK: 'groq:openai/gpt-oss-120b',
+        GROQ_API_KEY: 'test-only',
+      },
+      () => {
+        expect(() => resolveLanes()).toThrow(/Known: /);
+      },
+    );
   });
+});
+
+describe('independent Groq request caps', () => {
+  it('overrides Groq without changing Gemini or the conservative defaults', async () => {
+    const { quotaCaps } = await import('../lib/model/provider');
+    __setEnvForTests({
+      MODEL_CALLS_PER_MINUTE: 5,
+      MODEL_CALLS_PER_DAY: 20,
+      GROQ_CALLS_PER_MINUTE: 12,
+      GROQ_CALLS_PER_DAY: 80,
+    });
+    try {
+      expect(quotaCaps('google')).toEqual({
+        callsPerMinute: 5,
+        dailyCalls: 20,
+        reservedForCards: 4,
+      });
+      expect(quotaCaps('groq')).toEqual({
+        callsPerMinute: 12,
+        dailyCalls: 80,
+        reservedForCards: 16,
+      });
+    } finally {
+      __setEnvForTests(null);
+    }
+  });
+});
+
+it('honors transport Retry-After over text and never treats authentication as quota', () => {
+  const error = (statusCode: number) =>
+    new APICallError({
+      message: 'quota detail retry in 1s',
+      url: 'https://example.test',
+      requestBodyValues: {},
+      statusCode,
+      responseHeaders: { 'retry-after': '120' },
+    });
+  expect(asQuotaError(error(429))?.retryAfterSeconds).toBe(120);
+  expect(asQuotaError(error(401))).toBeNull();
+  expect(asQuotaError(error(503))).toBeNull();
 });

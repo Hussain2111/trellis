@@ -76,7 +76,7 @@ export async function threadMessages(threadId: number) {
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.threadId, threadId))
-    .orderBy(chatMessages.createdAt);
+    .orderBy(chatMessages.createdAt, chatMessages.id);
 }
 
 export async function appendMessage(input: {
@@ -99,6 +99,36 @@ export async function appendMessage(input: {
     .update(chatThreads)
     .set({ updatedAt: new Date() })
     .where(eq(chatThreads.id, input.threadId));
+}
+
+/** Persist only completed turns, together, so a provider failure leaves no duplicate question. */
+export async function appendChatTurn(input: {
+  threadId: number;
+  question: string;
+  answer: string;
+  toolCalls: string[];
+  validation: { dropped: { sentence: string; figures: number[] }[] } | null;
+}) {
+  const title = input.question.trim().slice(0, 70) + (input.question.trim().length > 70 ? '…' : '');
+  await db().transaction(async (tx) => {
+    await tx.insert(chatMessages).values([
+      { threadId: input.threadId, role: 'user', content: input.question },
+      {
+        threadId: input.threadId,
+        role: 'assistant',
+        content: input.answer,
+        toolCalls: input.toolCalls,
+        validation: input.validation,
+      },
+    ]);
+    await tx
+      .update(chatThreads)
+      .set({
+        updatedAt: new Date(),
+        title: sql`coalesce(${chatThreads.title}, ${title})`,
+      })
+      .where(eq(chatThreads.id, input.threadId));
+  });
 }
 
 export async function titleThread(threadId: number, from: string) {

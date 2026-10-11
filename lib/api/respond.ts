@@ -12,18 +12,20 @@
  * resolving the account, a query against a column a migration has not created
  * yet — is inside this one.
  */
-export async function respond(handler: () => Promise<Response>): Promise<Response> {
+export async function respond(
+  handler: () => Promise<Response>,
+  safeMessage?: string,
+): Promise<Response> {
   try {
     return await handler();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[route]', message);
+    console.error('[route]', safeMessage ? 'Chat request failed' : message);
     return Response.json(
       {
         error: 'server_error',
-        // The real message. This app has one user, who is also the person who
-        // would otherwise be reading server logs to find out what broke.
-        message,
+        // Callers handling provider errors supply safe text instead of exposing internals.
+        message: safeMessage ?? message,
       },
       { status: 500 },
     );

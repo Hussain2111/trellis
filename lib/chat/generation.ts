@@ -1,4 +1,10 @@
-import { stepCountIs, type ToolSet, type PrepareStepFunction, type StepResult } from 'ai';
+import {
+  stepCountIs,
+  type ToolSet,
+  type PrepareStepFunction,
+  type StepResult,
+  type StopCondition,
+} from 'ai';
 import { stripUnbackedSentences } from '../validate/numbers';
 
 /** Keep the last request inside the existing allowance for an evidence-based answer. */
@@ -15,7 +21,9 @@ export function chatGenerationOptions<TOOLS extends ToolSet>(maxSteps: number, s
         ? { toolChoice: 'required' }
         : undefined;
 
-  return { stopWhen: stepCountIs(maxSteps), prepareStep };
+  const toolFailed: StopCondition<TOOLS> = ({ steps }) =>
+    steps.some((step) => step.content.some((part) => part.type === 'tool-error'));
+  return { stopWhen: [stepCountIs(maxSteps), toolFailed], prepareStep };
 }
 
 /** Metadata only: never include prompts, tool arguments/results, or answer text. */

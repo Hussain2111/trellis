@@ -5,16 +5,16 @@ import { db } from '@/lib/db/client';
 import { modelRuns } from '@/lib/db/schema';
 import { chatTools } from '@/lib/chat/tools';
 import {
-  appendMessage,
+  appendChatTurn,
   buildSystemPrompt,
   ledgerFor,
   selfAccountId,
   findThread,
   threadMessages,
-  titleThread,
 } from '@/lib/chat/threads';
 import {
   asQuotaError,
+  classifyProviderFailure,
   checkHeadroom,
   maxStepsFor,
   quotaCaps,
@@ -69,22 +69,16 @@ export async function POST(request: Request): Promise<Response> {
     }
     const sourceCardId = thread.sourceCardId;
 
-    await appendMessage({ threadId, role: 'user', content: message });
     const history = await threadMessages(threadId);
-    // Titles the thread from the first thing the user says, and only if it has no
-    // title — a thread opened from a note was already named after the note.
-    if (history.filter((m) => m.role === 'user').length === 1) await titleThread(threadId, message);
-
-    const caps = quotaCaps();
 
     let lanes;
     try {
       lanes = resolveLanes();
-    } catch (error) {
+    } catch {
       return Response.json(
         {
           error: 'model_unavailable',
-          message: error instanceof Error ? error.message : 'no model',
+          message: 'Chat is unavailable right now. Your question can be retried.',
         },
         { status: 503 },
       );
@@ -107,10 +101,13 @@ export async function POST(request: Request): Promise<Response> {
         : '');
 
     const tools = chatTools(accountId);
-    const messages = history.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }));
+    const messages = [
+      ...history.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user' as const, content: message },
+    ];
 
     /**
      * Walk the lanes. A lane out of requests is a reason to try the next one,
@@ -124,7 +121,9 @@ export async function POST(request: Request): Promise<Response> {
      */
     let lastRefusal: { message: string; retryAfterSeconds?: number } | null = null;
 
+    let hadTransientFailure = false;
     for (const model of lanes) {
+      const caps = quotaCaps(model.provider);
       const headroom = await checkHeadroom('chat', ledgerFor(model.provider), caps);
       if (!headroom.allowed) {
         lastRefusal = {
@@ -139,8 +138,9 @@ export async function POST(request: Request): Promise<Response> {
       const started = Date.now();
       let attemptedCalls = 0;
       const maxSteps = Math.min(maxStepsFor(caps), headroom.limit - headroom.used);
+      let result;
       try {
-        const result = await generateText({
+        result = await generateText({
           model: model.model,
           system,
           messages,
@@ -166,62 +166,14 @@ export async function POST(request: Request): Promise<Response> {
           maxRetries: 0,
           temperature: 0.4,
         });
-
-        // Everything the tools actually returned this turn. This — and only
-        // this — is what the model's numbers are allowed to be drawn from.
-        const evidence = result.steps.flatMap((step) =>
-          step.toolResults.map((r) => (r as { output?: unknown }).output),
-        );
-
-        const { answer, dropped, outcome, emptyBeforeValidation, validatedTextLength } =
-          validateChatAnswer(result.text, evidence);
-        console.info('[chat.response]', {
-          threadId,
-          provider: model.provider,
-          steps: result.steps.length,
-          finishReason: result.finishReason,
-          textLength: result.text.length,
-          emptyBeforeValidation,
-          validatedTextLength,
-          droppedCount: dropped.length,
-          outcome,
-        });
-
-        await appendMessage({
-          threadId,
-          role: 'assistant',
-          content: answer,
-          toolCalls: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
-          validation: dropped.length > 0 ? { dropped } : null,
-        });
-
-        await db()
-          .insert(modelRuns)
-          .values({
-            accountId,
-            purpose: 'chat',
-            provider: model.provider,
-            model: model.modelId,
-            promptTokens: result.usage?.inputTokens ?? null,
-            completionTokens: result.usage?.outputTokens ?? null,
-            status: 'ok',
-            calls: result.steps.length,
-            durationMs: Date.now() - started,
-          });
-
-        return Response.json({
-          answer,
-          // Surfaced rather than hidden: if the validator had to remove
-          // something, that is worth knowing about the model, not just about
-          // the answer.
-          dropped: dropped.length,
-          toolsUsed: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
-          // Which lane answered. A fallback answering is not a failure, but it
-          // is worth being able to see rather than having to infer.
-          via: model.isFallback ? `${model.provider}:${model.modelId}` : undefined,
-        });
+        // SDK lifecycle callbacks swallow exceptions; stopWhen halts the loop,
+        // and this check prevents treating failed SQL/tool execution as an answer.
+        if (result.steps.some((step) => step.content.some((part) => part.type === 'tool-error'))) {
+          throw new Error('Chat tool execution failed');
+        }
       } catch (error) {
-        const quota = asQuotaError(error);
+        const failure = classifyProviderFailure(error);
+        const quota = failure === 'quota' ? asQuotaError(error) : null;
 
         await db()
           .insert(modelRuns)
@@ -231,28 +183,95 @@ export async function POST(request: Request): Promise<Response> {
             provider: model.provider,
             model: model.modelId,
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: failure,
             // A rejected call still reached the provider and still counted
             // against the limit there. Recording it as zero would let the
             // ledger drift below what is actually being enforced, which is how
             // a guard gets quietly overrun.
-            calls: Math.max(1, attemptedCalls),
+            calls: attemptedCalls,
             durationMs: Date.now() - started,
           });
 
         if (quota) {
           lastRefusal = {
-            message: `${model.provider} is over its request limit. ${waitPhrase(quota.retryAfterSeconds)}`,
+            message: `Chat is over its request limit. ${waitPhrase(quota.retryAfterSeconds)}`,
             retryAfterSeconds: quota.retryAfterSeconds,
           };
           continue;
         }
 
+        if (failure === 'transient') {
+          hadTransientFailure = true;
+          continue;
+        }
         return Response.json(
-          { error: 'failed', message: error instanceof Error ? error.message : String(error) },
+          { error: 'failed', message: 'Chat could not answer right now. Please try again later.' },
           { status: 500 },
         );
       }
+      // Everything the tools actually returned this turn. This — and only
+      // this — is what the model's numbers are allowed to be drawn from.
+      const evidence = result.steps.flatMap((step) =>
+        step.toolResults.map((r) => (r as { output?: unknown }).output),
+      );
+
+      const { answer, dropped, outcome, emptyBeforeValidation, validatedTextLength } =
+        validateChatAnswer(result.text, evidence);
+      console.info('[chat.response]', {
+        threadId,
+        provider: model.provider,
+        steps: result.steps.length,
+        finishReason: result.finishReason,
+        textLength: result.text.length,
+        emptyBeforeValidation,
+        validatedTextLength,
+        droppedCount: dropped.length,
+        outcome,
+      });
+
+      await db()
+        .insert(modelRuns)
+        .values({
+          accountId,
+          purpose: 'chat',
+          provider: model.provider,
+          model: model.modelId,
+          promptTokens: result.totalUsage?.inputTokens ?? null,
+          completionTokens: result.totalUsage?.outputTokens ?? null,
+          status: 'ok',
+          calls: result.steps.length,
+          durationMs: Date.now() - started,
+        });
+
+      await appendChatTurn({
+        threadId,
+        question: message,
+        answer,
+        toolCalls: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
+        validation: dropped.length > 0 ? { dropped } : null,
+      });
+
+      return Response.json({
+        answer,
+        // Surfaced rather than hidden: if the validator had to remove
+        // something, that is worth knowing about the model, not just about
+        // the answer.
+        dropped: dropped.length,
+        toolsUsed: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
+        // Which lane answered. A fallback answering is not a failure, but it
+        // is worth being able to see rather than having to infer.
+        via: model.isFallback ? `${model.provider}:${model.modelId}` : undefined,
+      });
+    }
+
+    if (hadTransientFailure) {
+      return Response.json(
+        {
+          error: 'model_unavailable',
+          message: 'Chat is temporarily busy. Please try again later.',
+        },
+        { status: 503 },
+      );
     }
 
     // Every lane refused. A quota refusal is not a failure of this app and
@@ -260,12 +279,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(
       {
         error: 'quota',
-        message:
-          lastRefusal?.message ??
-          'No model is available at the moment.' +
-            (lanes.length === 1
-              ? ' Setting MODEL_FALLBACK to a different provider would let this fall through instead of stopping.'
-              : ''),
+        message: lastRefusal?.message ?? 'Chat is unavailable right now. Please try again later.',
         retryAfterSeconds: lastRefusal?.retryAfterSeconds,
       },
       {
@@ -275,7 +289,7 @@ export async function POST(request: Request): Promise<Response> {
           : {}),
       },
     );
-  });
+  }, 'Chat could not answer right now. Please try again later.');
 }
 
 /** Seconds are the right unit for a minute and the wrong one for eleven hours. */
