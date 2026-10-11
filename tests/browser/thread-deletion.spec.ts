@@ -196,3 +196,57 @@ test('main-tab measurements separate first/repeat visits and contain only metada
     /Synthetic benchmark message|Deletion fixture|postgres:\/\//,
   );
 });
+
+test('chat outage restores the question and retry adds only one user bubble with correlation', async ({
+  page,
+}) => {
+  await page.goto(`/chat?thread=${ids[0]}`);
+  const question = 'Rank these synthetic posts by reach';
+  const input = page.getByPlaceholder('Ask about your posts…');
+  const requestIds: string[] = [];
+  let attempts = 0;
+  await page.route('**/api/chat', async (route) => {
+    requestIds.push(route.request().headers()['x-trellis-request-id'] ?? '');
+    await route.fulfill({
+      status: ++attempts === 1 ? 503 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        attempts === 1
+          ? {
+              error: 'model_unavailable',
+              message: 'Chat is temporarily busy. Please try again later.',
+            }
+          : { answer: 'A mocked validated answer.', dropped: 0 },
+      ),
+    });
+  });
+  await input.fill(question);
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
+  await expect(input).toHaveValue(question);
+  await expect(
+    page.getByText('Chat is temporarily busy. Please try again later.', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(question, { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
+  await expect(page.getByText('A mocked validated answer.', { exact: true })).toBeVisible();
+  await expect(page.getByText(question, { exact: true })).toHaveCount(1);
+  expect(requestIds).toHaveLength(2);
+  for (const id of requestIds) expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  expect(requestIds[0]).not.toBe(requestIds[1]);
+});
+
+test('network failure restores the chat draft without leaving a duplicate bubble', async ({
+  page,
+}) => {
+  await page.goto(`/chat?thread=${ids[0]}`);
+  const question = 'A synthetic retry question';
+  await page.route('**/api/chat', (route) => route.abort('failed'));
+  const input = page.getByPlaceholder('Ask about your posts…');
+  await input.fill(question);
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
+  await expect(input).toHaveValue(question);
+  await expect(
+    page.getByText('Could not reach the server. Please try again.', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(question, { exact: true })).toHaveCount(0);
+});

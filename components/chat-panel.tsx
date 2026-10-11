@@ -86,10 +86,8 @@ export function ChatPanel({
         );
         // Not lost. The question goes back in the box so it can be sent again
         // when the window rolls, instead of having to be retyped.
-        if (body?.error === 'quota') {
-          setInput(text);
-          setMessages((m) => m.slice(0, -1));
-        }
+        setInput(text);
+        setMessages((m) => m.slice(0, -1));
         return;
       }
 
@@ -101,7 +99,9 @@ export function ChatPanel({
     } catch {
       // Genuinely unreachable: the request never completed. Everything the
       // server said, including that it broke, is handled above.
-      setError('Could not reach the server — the request never completed.');
+      setError('Could not reach the server. Please try again.');
+      setInput(text);
+      setMessages((m) => m.slice(0, -1));
     } finally {
       setPending(false);
       timing.finish(outcome);
@@ -176,6 +176,7 @@ export function ChatPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about your posts…"
+          disabled={pending}
           className="flex-1 rounded-full border border-rule bg-card px-5 py-3 text-sm outline-none focus:border-accent"
         />
         <button

@@ -1,6 +1,6 @@
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import type { LanguageModel } from 'ai';
+import { APICallError, type LanguageModel } from 'ai';
 import { env } from '../env';
 
 /**
@@ -166,13 +166,16 @@ export function resolveLanes(): ResolvedModel[] {
   try {
     lanes.push({ model: build(primary), ...primary, isFallback: false });
   } catch (error) {
+    // Missing keys may use the existing backup lane; an unknown adapter is
+    // a configuration error, not a transient provider failure.
+    if (!PROVIDERS[primary.provider]) throw error;
     primaryError = error;
   }
 
   const configured = env().MODEL_FALLBACK;
   if (configured) {
     const fallback = parseModelRef(configured);
-    const sameProvider = lanes[0]?.provider === fallback.provider;
+    const sameProvider = primary.provider === fallback.provider;
     if (!sameProvider) {
       try {
         lanes.push({ model: build(fallback), ...fallback, isFallback: true });
@@ -338,12 +341,40 @@ export async function checkHeadroom(
 }
 
 /** Caps as configured. Read from the environment so the plan can change without a deploy. */
-export function quotaCaps(): QuotaCaps {
+export function quotaCaps(provider?: string): QuotaCaps {
+  const config = env();
+  const dailyCalls =
+    provider === 'groq'
+      ? (config.GROQ_CALLS_PER_DAY ?? config.MODEL_CALLS_PER_DAY)
+      : config.MODEL_CALLS_PER_DAY;
   return {
-    dailyCalls: env().MODEL_CALLS_PER_DAY,
-    reservedForCards: Math.min(40, Math.floor(env().MODEL_CALLS_PER_DAY / 5)),
-    callsPerMinute: env().MODEL_CALLS_PER_MINUTE,
+    dailyCalls,
+    reservedForCards: Math.min(40, Math.floor(dailyCalls / 5)),
+    callsPerMinute:
+      provider === 'groq'
+        ? (config.GROQ_CALLS_PER_MINUTE ?? config.MODEL_CALLS_PER_MINUTE)
+        : config.MODEL_CALLS_PER_MINUTE,
   };
+}
+
+export type ProviderFailure =
+  'quota' | 'transient' | 'auth' | 'invalid_request' | 'provider' | 'application';
+
+/** Only SDK transport errors qualify for failover; tool/DB exceptions do not. */
+export function classifyProviderFailure(error: unknown): ProviderFailure {
+  if (!APICallError.isInstance(error)) return 'application';
+  const status = error.statusCode;
+  if (status === 429) return 'quota';
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 400 || status === 404 || status === 422) return 'invalid_request';
+  if (
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    (status === undefined && error.isRetryable)
+  )
+    return 'transient';
+  return 'provider';
 }
 
 /**
@@ -367,7 +398,9 @@ export function asQuotaError(error: unknown): QuotaError | null {
     (error as { status?: number } | null)?.status;
   const message = error instanceof Error ? error.message : String(error);
 
-  const looksLikeQuota = status === 429 || /quota|rate.?limit|resource[_ ]exhausted/i.test(message);
+  const looksLikeQuota =
+    status === 429 ||
+    (status === undefined && /quota|rate.?limit|resource[_ ]exhausted/i.test(message));
   if (!looksLikeQuota) return null;
 
   // Providers state the wait in the error itself. Honouring it beats guessing,
@@ -377,7 +410,21 @@ export function asQuotaError(error: unknown): QuotaError | null {
 
   return {
     isQuota: true,
-    retryAfterSeconds: stated ? Math.ceil(Number(stated)) : 60,
+    retryAfterSeconds: retryAfter(error, stated),
     message,
   };
+}
+
+function retryAfter(error: unknown, stated?: string): number {
+  const header = APICallError.isInstance(error)
+    ? error.responseHeaders?.['retry-after']
+    : undefined;
+  const seconds = header
+    ? /^\d+(?:\.\d+)?$/.test(header)
+      ? Number(header)
+      : (Date.parse(header) - Date.now()) / 1000
+    : stated
+      ? Number(stated)
+      : 60;
+  return Number.isFinite(seconds) ? Math.max(1, Math.ceil(seconds)) : 60;
 }

@@ -53,6 +53,8 @@ export const envSchema = z.object({
   // MODEL_FALLBACK; the rest stay unset and cost nothing. All speak the OpenAI
   // wire format, so they share one adapter — see lib/model/provider.ts.
   GROQ_API_KEY: z.string().optional(),
+  GROQ_CALLS_PER_MINUTE: z.coerce.number().int().min(1).optional(),
+  GROQ_CALLS_PER_DAY: z.coerce.number().int().min(1).optional(),
   DEEPSEEK_API_KEY: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
   TOGETHER_API_KEY: z.string().optional(),

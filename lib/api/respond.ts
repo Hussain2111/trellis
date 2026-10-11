@@ -1,3 +1,5 @@
+import { timedResponse, type TimedRoute } from '../performance/server';
+
 /**
  * A route that throws before it can answer still has to answer.
  *
@@ -12,24 +14,25 @@
  * resolving the account, a query against a column a migration has not created
  * yet — is inside this one.
  */
-import { timedResponse, type TimedRoute } from '../performance/server';
-
 export async function respond(
   handler: () => Promise<Response>,
   timing?: { route: TimedRoute; request: Request },
+  safeMessage?: string,
 ): Promise<Response> {
-  if (timing) return timedResponse(timing.route, timing.request, () => respond(handler));
+  if (timing)
+    return timedResponse(timing.route, timing.request, () =>
+      respond(handler, undefined, safeMessage),
+    );
   try {
     return await handler();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[route]', message);
+    console.error('[route]', safeMessage ? 'Chat request failed' : message);
     return Response.json(
       {
         error: 'server_error',
-        // The real message. This app has one user, who is also the person who
-        // would otherwise be reading server logs to find out what broke.
-        message,
+        // Callers handling provider errors supply safe text instead of exposing internals.
+        message: safeMessage ?? message,
       },
       { status: 500 },
     );
