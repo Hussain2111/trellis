@@ -1,9 +1,10 @@
 # Resilient chat with Groq
 
-Based on `main` at `deaaf38122e0b1b36a7cf9318e2b9347aec0c612`. PR #4
-(`sd-01-performance-thread-deletion`) was open and unmerged when inspected on
-2026-10-11. This branch does not include or alter its deletion/performance work.
-Rebase and review overlapping chat-handler edits if #4 lands first.
+Integrated latest `main`, including merged PR #4 at `b1dddd16`, into the
+existing `fix/groq-resilient-chat` branch on 2026-10-11. Merge conflicts in
+`app/api/chat/route.ts` and `lib/api/respond.ts` were resolved by combining
+PR #4's performance/correlation hooks with PR #5's safe error/failover behavior.
+The performance modules, SQL timing proxy and deletion fixes remain as in main.
 
 ## Manual environment configuration
 
@@ -63,7 +64,18 @@ unsupported numerical sentences. Provider capacity errors never become missing
 Instagram-data claims.
 
 Successful runs record total input/output tokens across every tool-loop step;
-failed attempts record the actual call-start count. The question and validated
+failed attempts record the actual call-start count. Successful provider usage is written before validation/conversation persistence
+and outside the generation/failover catch. `model_runs.status=ok` denotes model
+generation success, not successful chat storage. If saving the completed turn
+fails, usage remains counted once, a safe `chat_persistence_failed` response
+restores the question, and a metadata-only `[chat.persistence]` diagnostic records
+`generationOutcome:ok` and `persistenceOutcome:error` with the request correlation
+ID. Both ledger writes and turn storage retain the persistence timing stage.
+No second error run or fallback model call is generated for a save failure.
+If the ledger itself cannot be written, the request stops before saving the
+conversation; a database outage can still prevent durable quota accounting.
+
+The question and validated
 answer are saved in one database transaction after success. History uses the
 message ID to break equal-timestamp ties. A provider failure saves neither side
 of the turn; the client restores the question and removes the optimistic bubble
@@ -77,6 +89,9 @@ on any failed response/network request. Thread titles are preserved when set.
   Groq still enforces its own TPM/TPD. A 429 fails over once or returns a wait.
 - Existing card generation uses its current quota path; independent Groq caps
   added here apply to chat. Non-Groq providers retain the existing generic caps.
+- Generation and conversation persistence have separate outcomes in diagnostics;
+  there is no new persistence-status column or migration. The successful model-run
+  row retains generation status even if turn storage later fails.
 - No automatic retry, circuit breaker or cooldown cache is added. Repeated manual
   attempts remain subject to the existing persisted request guards.
 - A lost HTTP response _after_ a completed turn commits remains ambiguous. There
@@ -96,18 +111,26 @@ on any failed response/network request. Thread titles are preserved when set.
 
 ## Validation
 
-- Frozen `npm ci --ignore-scripts`; dependency/lockfile versions retained.
-- Full suite: 203 tests passed across 17 files, using a new disposable local
-  PostgreSQL 17 container and `--testTimeout=30000`. Includes real transaction
-  rollback and provider-scoped ledger checks. No production database was used.
-- Focused SDK/route/provider/env tests passed, including primary success,
-  overload/quota/network failover, exhausted guards, both providers failing,
-  invalid credentials/models, tool failure, validated/unsupported Groq numbers,
-  matching conversation context, single-provider use and failed-turn retry.
-- Type checking, lint and repository formatting checks passed.
-- `next build --webpack` production build passed. Default `npm run build`
-  (Turbopack) was attempted but its CSS worker failed to bind a local port:
-  `Operation not permitted`. The same failure persisted with elevated execution;
-  no default-build success is claimed and project build configuration is unchanged.
-- No browser UI automation, live Groq/Gemini inference, or authenticated Vercel
-  deployment validation was performed. Adapter requests were mocked HTTP.
+The original PR checks passed 203 unit/database tests and a webpack build.
+The integration update adds checks for correlation/timing across failover,
+successful provider usage before failed conversation persistence, and safe
+behavior when writing the usage ledger itself fails. Updated results are recorded
+in the PR description. Tests use disposable local databases and mocked provider
+responses; production data and provider keys are not used.
+
+The default Turbopack build was attempted again but its CSS worker failed to
+bind a local port with `Operation not permitted`. Project build configuration is
+unchanged; a supported webpack production build is used for local verification.
+
+Integration validation results (2026-10-11):
+
+- 222 unit/database tests passed across 19 files on a fresh disposable local
+  PostgreSQL 17 instance, with `--testTimeout=30000`.
+- 9 production-browser tests passed using system Chromium and a separate fresh
+  synthetic fixture database. Includes all 7 existing deletion/navigation/privacy
+  checks and 2 new chat HTTP/network retry checks. Provider responses were mocked.
+- Typecheck, lint, formatting and `git diff --check` passed.
+- Webpack production build passed with test-only browser instrumentation enabled.
+  Default `npm run build` remains blocked by the Turbopack socket restriction.
+- No migrations were added. No persisted environment settings, production data,
+  provider credentials, deployments or merge state were changed.

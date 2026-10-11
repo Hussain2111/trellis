@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { modelRuns } from '@/lib/db/schema';
 import { chatTools } from '@/lib/chat/tools';
+import { count, measure, requestId, startStage } from '@/lib/performance/server';
 import {
   appendChatTurn,
   buildSystemPrompt,
@@ -43,7 +44,8 @@ const bodySchema = z.object({
  * defeat the point. Tool progress could stream; the answer cannot.
  */
 export async function POST(request: Request): Promise<Response> {
-  return respond(async () => {
+  const handler = async () => {
+    const finishPreflight = startStage('preflight');
     const parsed = bodySchema.safeParse(await request.json());
     if (!parsed.success) return Response.json({ error: 'bad request' }, { status: 400 });
     const { threadId, message } = parsed.data;
@@ -70,6 +72,7 @@ export async function POST(request: Request): Promise<Response> {
     const sourceCardId = thread.sourceCardId;
 
     const history = await threadMessages(threadId);
+    count('historyMessages', history.length);
 
     let lanes;
     try {
@@ -137,9 +140,12 @@ export async function POST(request: Request): Promise<Response> {
 
       const started = Date.now();
       let attemptedCalls = 0;
+      const modelTimers = new Map<string, (failed?: boolean) => void>();
+      const toolTimers = new Map<string, (failed?: boolean) => void>();
       const maxSteps = Math.min(maxStepsFor(caps), headroom.limit - headroom.used);
       let result;
       try {
+        finishPreflight();
         result = await generateText({
           model: model.model,
           system,
@@ -150,11 +156,27 @@ export async function POST(request: Request): Promise<Response> {
           // 5-a-minute budget from inside a single call, where no pre-flight
           // check can reach.
           ...chatGenerationOptions<typeof tools>(maxSteps, system),
-          onLanguageModelCallStart: () => {
+          onLanguageModelCallStart: ({ callId }) => {
             attemptedCalls += 1;
+            count('modelCalls');
+            modelTimers.set(callId, startStage('model'));
+          },
+          onLanguageModelCallEnd: ({ callId, usage }) => {
+            modelTimers.get(callId)?.();
+            modelTimers.delete(callId);
+            count('inputTokens', usage.inputTokens ?? 0);
+            count('outputTokens', usage.outputTokens ?? 0);
+          },
+          onToolExecutionStart: ({ toolCall }) => {
+            toolTimers.set(toolCall.toolCallId, startStage('tool'));
+          },
+          onToolExecutionEnd: ({ toolCall, toolOutput }) => {
+            toolTimers.get(toolCall.toolCallId)?.(toolOutput.type === 'tool-error');
+            toolTimers.delete(toolCall.toolCallId);
           },
           onStepEnd: (step) => {
             console.info('[chat.step]', {
+              requestId: requestId(),
               threadId,
               provider: model.provider,
               ...chatStepDiagnostic(step),
@@ -172,25 +194,29 @@ export async function POST(request: Request): Promise<Response> {
           throw new Error('Chat tool execution failed');
         }
       } catch (error) {
+        for (const finish of modelTimers.values()) finish(true);
+        for (const finish of toolTimers.values()) finish(true);
         const failure = classifyProviderFailure(error);
         const quota = failure === 'quota' ? asQuotaError(error) : null;
 
-        await db()
-          .insert(modelRuns)
-          .values({
-            accountId,
-            purpose: 'chat',
-            provider: model.provider,
-            model: model.modelId,
-            status: 'error',
-            error: failure,
-            // A rejected call still reached the provider and still counted
-            // against the limit there. Recording it as zero would let the
-            // ledger drift below what is actually being enforced, which is how
-            // a guard gets quietly overrun.
-            calls: attemptedCalls,
-            durationMs: Date.now() - started,
-          });
+        await measure('persistence', () =>
+          db()
+            .insert(modelRuns)
+            .values({
+              accountId,
+              purpose: 'chat',
+              provider: model.provider,
+              model: model.modelId,
+              status: 'error',
+              error: failure,
+              // A rejected call still reached the provider and still counted
+              // against the limit there. Recording it as zero would let the
+              // ledger drift below what is actually being enforced, which is how
+              // a guard gets quietly overrun.
+              calls: attemptedCalls,
+              durationMs: Date.now() - started,
+            }),
+        );
 
         if (quota) {
           lastRefusal = {
@@ -209,15 +235,37 @@ export async function POST(request: Request): Promise<Response> {
           { status: 500 },
         );
       }
+      // This row accounts for provider generation, not conversation persistence.
+      // Commit usage first, outside the generation/failover catch: saving a turn
+      // can fail after real provider calls have already consumed quota.
+      await measure('persistence', () =>
+        db()
+          .insert(modelRuns)
+          .values({
+            accountId,
+            purpose: 'chat',
+            provider: model.provider,
+            model: model.modelId,
+            promptTokens: result.totalUsage?.inputTokens ?? null,
+            completionTokens: result.totalUsage?.outputTokens ?? null,
+            status: 'ok',
+            calls: result.steps.length,
+            durationMs: Date.now() - started,
+          }),
+      );
+
       // Everything the tools actually returned this turn. This — and only
       // this — is what the model's numbers are allowed to be drawn from.
       const evidence = result.steps.flatMap((step) =>
         step.toolResults.map((r) => (r as { output?: unknown }).output),
       );
 
+      const finishValidation = startStage('validation');
       const { answer, dropped, outcome, emptyBeforeValidation, validatedTextLength } =
         validateChatAnswer(result.text, evidence);
+      finishValidation();
       console.info('[chat.response]', {
+        requestId: requestId(),
         threadId,
         provider: model.provider,
         steps: result.steps.length,
@@ -229,27 +277,32 @@ export async function POST(request: Request): Promise<Response> {
         outcome,
       });
 
-      await db()
-        .insert(modelRuns)
-        .values({
-          accountId,
-          purpose: 'chat',
+      try {
+        await measure('persistence', () =>
+          appendChatTurn({
+            threadId,
+            question: message,
+            answer,
+            toolCalls: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
+            validation: dropped.length > 0 ? { dropped } : null,
+          }),
+        );
+      } catch {
+        console.info('[chat.persistence]', {
+          requestId: requestId(),
+          threadId,
           provider: model.provider,
-          model: model.modelId,
-          promptTokens: result.totalUsage?.inputTokens ?? null,
-          completionTokens: result.totalUsage?.outputTokens ?? null,
-          status: 'ok',
-          calls: result.steps.length,
-          durationMs: Date.now() - started,
+          generationOutcome: 'ok',
+          persistenceOutcome: 'error',
         });
-
-      await appendChatTurn({
-        threadId,
-        question: message,
-        answer,
-        toolCalls: result.steps.flatMap((step) => step.toolCalls.map((c) => c.toolName)),
-        validation: dropped.length > 0 ? { dropped } : null,
-      });
+        return Response.json(
+          {
+            error: 'chat_persistence_failed',
+            message: 'Your answer could not be saved. Please try again later.',
+          },
+          { status: 500 },
+        );
+      }
 
       return Response.json({
         answer,
@@ -289,7 +342,12 @@ export async function POST(request: Request): Promise<Response> {
           : {}),
       },
     );
-  }, 'Chat could not answer right now. Please try again later.');
+  };
+  return respond(
+    handler,
+    { route: '/api/chat', request },
+    'Chat could not answer right now. Please try again later.',
+  );
 }
 
 /** Seconds are the right unit for a minute and the wrong one for eleven hours. */

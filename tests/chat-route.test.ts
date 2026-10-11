@@ -78,9 +78,72 @@ beforeEach(() => {
   state.headroom = { allowed: true, used: 0, limit: 80 };
   vi.spyOn(console, 'info').mockImplementation(() => {});
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('buffered chat response and provider accounting', () => {
+  it('correlates request metadata and separates model/tool time from persistence without recording text', async () => {
+    vi.stubEnv('TRELLIS_PERFORMANCE', '1');
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        calls += 1;
+        return calls < 4 ? response() : response('1248 views.');
+      },
+    });
+    state.resolveLanes.mockReturnValue([lane(model)]);
+    const id = 'a1d79f8a-9bcb-4517-8ddc-45748b9ab31d';
+    const result = await POST(
+      new Request('http://localhost/api/chat', {
+        headers: { 'x-trellis-request-id': id },
+        method: 'POST',
+        body: JSON.stringify({ threadId: 11, message: 'Private conversation; never export this' }),
+      }),
+    );
+    expect(result.status).toBe(200);
+    expect(result.headers.get('x-trellis-request-id')).toBe(id);
+    const log = vi.mocked(console.info).mock.calls.find(([prefix]) => prefix === '[performance]')!;
+    const metadata = JSON.parse(log[1] as string);
+    expect(metadata.counters).toMatchObject({
+      modelCalls: 4,
+      historyMessages: 1,
+      inputTokens: 40,
+      outputTokens: 20,
+    });
+    expect(metadata.stages.model.count).toBe(4);
+    expect(metadata.stages.model.wallMs).toBeGreaterThan(30);
+    expect(metadata.stages.tool.count).toBe(3);
+    expect(metadata.stages.persistence.count).toBe(2);
+    expect(metadata.stages.validation.count).toBe(1);
+    expect(metadata.otherRequestMs).toBeGreaterThanOrEqual(0);
+    expect(log[1]).not.toContain('Private conversation');
+    expect(log[1]).not.toContain('1248 views.');
+  });
+
+  it('records the duration of a rejected model call without exporting its error', async () => {
+    vi.stubEnv('TRELLIS_PERFORMANCE', '1');
+    state.resolveLanes.mockReturnValue([
+      lane(
+        new MockLanguageModelV3({
+          doGenerate: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            throw new Error('Private provider response');
+          },
+        }),
+      ),
+    ]);
+    expect((await POST(request())).status).toBe(500);
+    const log = vi.mocked(console.info).mock.calls.find(([prefix]) => prefix === '[performance]')!;
+    const metadata = JSON.parse(log[1] as string);
+    expect(metadata.stages.model).toMatchObject({ count: 1, failed: 1 });
+    expect(metadata.stages.model.wallMs).toBeGreaterThan(5);
+    expect(metadata.outcome).toBe('error');
+    expect(log[1]).not.toContain('Private provider response');
+  });
+
   it('saves a final answer from lookup evidence with four requests and three tool calls', async () => {
     const model = new MockLanguageModelV3({
       doGenerate: [response(), response(), response(), response('1248 views.')],
@@ -380,4 +443,111 @@ it('returns a safe wait after both providers return 429 without saving a partial
   expect(await result.json()).toMatchObject({ error: 'quota', retryAfterSeconds: 60 });
   expect(state.appendChatTurn).not.toHaveBeenCalled();
   expect(state.runs).toHaveBeenCalledTimes(2);
+});
+
+describe('merged performance instrumentation and persistence accounting', () => {
+  const id = '12345678-1234-4234-8234-123456789abc';
+  const correlatedRequest = () =>
+    new Request(request(), { headers: { 'x-trellis-request-id': id } });
+  const timing = () => {
+    const entry = vi.mocked(console.info).mock.calls.find(([label]) => label === '[performance]');
+    return JSON.parse(String(entry?.[1]));
+  };
+
+  it('keeps correlation, model/tool timing, and counters across a provider switch', async () => {
+    vi.stubEnv('TRELLIS_PERFORMANCE', '1');
+    state.resolveLanes.mockReturnValue([
+      lane(
+        new MockLanguageModelV3({
+          doGenerate: async () => {
+            throw apiError(503);
+          },
+        }),
+      ),
+      lane(
+        new MockLanguageModelV3({ doGenerate: [response(), response('1248 views.')] }),
+        'groq',
+        true,
+      ),
+    ]);
+    const result = await POST(correlatedRequest());
+    expect(result.status).toBe(200);
+    expect(result.headers.get('x-trellis-request-id')).toBe(id);
+    expect(result.headers.get('server-timing')).toContain('model;dur=');
+    expect(timing()).toMatchObject({
+      requestId: id,
+      outcome: 'ok',
+      counters: { historyMessages: 1, modelCalls: 3, inputTokens: 20, outputTokens: 10 },
+      stages: {
+        preflight: { count: 1 },
+        model: { count: 3, failed: 1 },
+        tool: { count: 1, failed: 0 },
+        validation: { count: 1 },
+        persistence: { count: 3, failed: 0 },
+      },
+    });
+    expect(console.info).toHaveBeenCalledWith(
+      '[chat.response]',
+      expect.objectContaining({ requestId: id, provider: 'groq' }),
+    );
+    expect(JSON.stringify(timing())).not.toContain('Highest views?');
+  });
+
+  it('counts successful generation before failed turn persistence and distinguishes its outcome', async () => {
+    vi.stubEnv('TRELLIS_PERFORMANCE', '1');
+    state.appendChatTurn.mockRejectedValueOnce(new Error('private persistence error'));
+    const fallback = new MockLanguageModelV3();
+    state.resolveLanes.mockReturnValue([
+      lane(new MockLanguageModelV3({ doGenerate: [response(), response('1248 views.')] })),
+      lane(fallback, 'groq', true),
+    ]);
+    const result = await POST(correlatedRequest());
+    expect(result.status).toBe(500);
+    expect(await result.json()).toMatchObject({ error: 'chat_persistence_failed' });
+    expect(state.runs).toHaveBeenCalledTimes(1);
+    expect(state.runs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'google',
+        status: 'ok',
+        calls: 2,
+        promptTokens: 20,
+        completionTokens: 10,
+      }),
+    );
+    expect(state.runs.mock.invocationCallOrder[0]).toBeLessThan(
+      state.appendChatTurn.mock.invocationCallOrder[0]!,
+    );
+    expect(fallback.doGenerateCalls).toHaveLength(0);
+    expect(console.info).toHaveBeenCalledWith(
+      '[chat.persistence]',
+      expect.objectContaining({
+        requestId: id,
+        generationOutcome: 'ok',
+        persistenceOutcome: 'error',
+      }),
+    );
+    expect(timing()).toMatchObject({
+      requestId: id,
+      outcome: 'error',
+      stages: { model: { count: 2, failed: 0 }, persistence: { count: 2, failed: 1 } },
+    });
+    expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(
+      'private persistence error',
+    );
+  });
+
+  it('does not call another provider or save the turn if the usage ledger cannot be written', async () => {
+    state.runs.mockRejectedValueOnce(new Error('private ledger detail'));
+    const fallback = new MockLanguageModelV3();
+    state.resolveLanes.mockReturnValue([
+      lane(new MockLanguageModelV3({ doGenerate: response('Choose a measure.') })),
+      lane(fallback, 'groq', true),
+    ]);
+    const result = await POST(request());
+    expect(result.status).toBe(500);
+    expect(JSON.stringify(await result.json())).not.toContain('private ledger detail');
+    expect(state.runs).toHaveBeenCalledTimes(1);
+    expect(state.appendChatTurn).not.toHaveBeenCalled();
+    expect(fallback.doGenerateCalls).toHaveLength(0);
+  });
 });

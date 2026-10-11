@@ -1,3 +1,5 @@
+import { timedResponse, type TimedRoute } from '../performance/server';
+
 /**
  * A route that throws before it can answer still has to answer.
  *
@@ -14,8 +16,13 @@
  */
 export async function respond(
   handler: () => Promise<Response>,
+  timing?: { route: TimedRoute; request: Request },
   safeMessage?: string,
 ): Promise<Response> {
+  if (timing)
+    return timedResponse(timing.route, timing.request, () =>
+      respond(handler, undefined, safeMessage),
+    );
   try {
     return await handler();
   } catch (error) {
