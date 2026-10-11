@@ -551,3 +551,46 @@ describe('merged performance instrumentation and persistence accounting', () => 
     expect(fallback.doGenerateCalls).toHaveLength(0);
   });
 });
+
+it('logs a safe preparation error and correlation with instrumentation disabled', async () => {
+  vi.stubEnv('TRELLIS_PERFORMANCE', '0');
+  const { UnsupportedFunctionalityError } = await import('ai');
+  state.resolveLanes.mockReturnValue([
+    lane(
+      new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw apiError(503);
+        },
+      }),
+    ),
+    lane(
+      new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw new UnsupportedFunctionalityError({ functionality: 'private tool data or secret' });
+        },
+      }),
+      'groq',
+      true,
+    ),
+  ]);
+  const result = await POST(request());
+  expect(result.status).toBe(500);
+  const id = result.headers.get('x-trellis-request-id');
+  expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  expect(console.error).toHaveBeenCalledWith(
+    '[chat.failure]',
+    expect.objectContaining({
+      requestId: id,
+      provider: 'groq',
+      model: 'test',
+      failureStage: 'provider_preparation',
+      sdkErrorCode: 'AI_UnsupportedFunctionalityError',
+      exceptionName: 'AI_UnsupportedFunctionalityError',
+      httpRequestAttempted: false,
+      fallbackSelected: true,
+      classification: 'application',
+    }),
+  );
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private tool data');
+  expect(state.appendChatTurn).not.toHaveBeenCalled();
+});
