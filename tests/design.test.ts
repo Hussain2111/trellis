@@ -43,10 +43,9 @@ describe('design tokens reach the browser', () => {
   });
 });
 
-/** Validate the actual shared tokens, including the system-dark overrides. */
+/** Validate the shared light-only palette. */
 const css = readFileSync('app/globals.css', 'utf8');
-const base = tokens(css.split('@media')[0]!);
-const dark = { ...base, ...tokens(css.split('@media')[1]!) };
+const palette = tokens(css);
 
 function tokens(source: string): Record<string, string> {
   return Object.fromEntries(
@@ -69,10 +68,7 @@ function contrast(a: string, b: string): number {
   return (high! + 0.05) / (low! + 0.05);
 }
 
-describe.each([
-  ['light', base],
-  ['dark', dark],
-] as const)('%s palette contrast', (_theme, palette) => {
+describe('light palette contrast', () => {
   const surfaces = [
     'paper',
     'paper-sunk',
@@ -127,4 +123,9 @@ it('uses the filled-action tokens wherever a white label sits on an accent fill'
     /bg-accent\b[^'"\n]*text-(?:white|on-action)/.test(readFileSync(file, 'utf8')),
   );
   expect(offenders).toEqual([]);
+});
+
+it('keeps native controls light and does not follow the system dark preference', () => {
+  expect(css).toMatch(/color-scheme:\s*light\s*;/);
+  expect(css).not.toMatch(/prefers-color-scheme|color-scheme:\s*dark/);
 });
