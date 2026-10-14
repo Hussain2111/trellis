@@ -41,36 +41,9 @@
     ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
 
-/* Preserve system preference and the existing explicit light opt-out.
-   There is no independent theme toggle. */
+/* Keep Trellis in light mode regardless of the system preference. */
 :root {
   color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    color-scheme: dark;
-    --color-paper: #101820;
-    --color-paper-sunk: #1b2832;
-    --color-card: #263540;
-    --color-ink: #f3f7f7;
-    --color-ink-muted: #c2ced4;
-    --color-ink-faint: #adbec8;
-    --color-rule: #465963;
-    --color-control: #80969f;
-    --color-accent: #88c9c3;
-    --color-accent-soft: #243d43;
-    --color-action-edge: #88c9c3;
-    --color-positive: #8cd6a8;
-    --color-negative: #ffa4aa;
-    --color-negative-soft: #402c37;
-    --color-note-1: #243d43;
-    --color-note-2: #293e45;
-    --color-note-3: #263540;
-    --color-note-4: #2b3b46;
-    --color-note-5: #304247;
-    --color-note-6: #2c3d43;
-  }
 }
 
 body {
