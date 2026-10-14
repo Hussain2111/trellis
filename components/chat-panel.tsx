@@ -177,12 +177,12 @@ export function ChatPanel({
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about your posts…"
           disabled={pending}
-          className="flex-1 rounded-full border border-rule bg-card px-5 py-3 text-sm outline-none focus:border-accent"
+          className="flex-1 rounded-full border border-control bg-card px-5 py-3 text-sm outline-none focus:border-accent"
         />
         <button
           type="submit"
           disabled={pending || input.trim().length === 0}
-          className="rounded-full bg-accent px-5 py-3 text-sm font-medium text-white disabled:opacity-40"
+          className="rounded-full border border-action-edge bg-action px-5 py-3 text-sm font-medium text-on-action hover:bg-action-hover disabled:opacity-40"
         >
           Ask
         </button>

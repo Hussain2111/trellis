@@ -123,7 +123,7 @@ export function MonthCalendar({
                   <span
                     className={`grid size-6 place-items-center rounded-full text-xs ${
                       isToday
-                        ? 'bg-accent font-semibold text-white'
+                        ? 'border border-action-edge bg-action font-semibold text-on-action'
                         : inMonth
                           ? 'text-ink-muted'
                           : 'text-ink-faint'
@@ -333,7 +333,7 @@ function EntryDetail({ entry, onChanged }: { entry: Entry; onChanged: () => void
             type="button"
             disabled={busy}
             onClick={() => void act({ action: 'publish' })}
-            className="rounded-full bg-accent px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+            className="rounded-full border border-action-edge bg-action px-4 py-2 text-xs font-medium text-on-action hover:bg-action-hover disabled:opacity-50"
           >
             Mark posted
           </button>
@@ -396,13 +396,13 @@ function EntryForm({ day, onSaved }: { day: string; onSaved: () => void }) {
             type="time"
             name="timeOfDay"
             defaultValue="12:00"
-            className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+            className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
           />
         </Field>
         <Field label="Format">
           <select
             name="format"
-            className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+            className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
           >
             <option value="">—</option>
             <option value="carousel">Carousel</option>
@@ -416,42 +416,42 @@ function EntryForm({ day, onSaved }: { day: string; onSaved: () => void }) {
         <input
           name="title"
           autoComplete="off"
-          className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
         />
       </Field>
       <Field label="Hook">
         <input
           name="hook"
           autoComplete="off"
-          className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
         />
       </Field>
       <Field label="Caption">
         <textarea
           name="caption"
           rows={4}
-          className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
         />
       </Field>
       <Field label="Hashtags">
         <input
           name="hashtags"
           placeholder="#kbeauty #skincare"
-          className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
         />
       </Field>
       <Field label="Notes">
         <textarea
           name="notes"
           rows={2}
-          className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-control bg-paper px-3 py-2 text-sm"
         />
       </Field>
 
       <button
         type="submit"
         disabled={saving}
-        className="w-full rounded-full bg-accent px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+        className="w-full rounded-full border border-action-edge bg-action px-4 py-2.5 text-sm font-medium text-on-action hover:bg-action-hover disabled:opacity-50"
       >
         {saving ? 'Saving…' : 'Save draft'}
       </button>

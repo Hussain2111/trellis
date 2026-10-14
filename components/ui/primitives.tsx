@@ -100,8 +100,8 @@ export function Badge({
 }) {
   const tones = {
     neutral: 'bg-paper-sunk text-ink-muted',
-    good: 'bg-accent-soft text-ink',
-    bad: 'bg-accent-soft text-negative',
+    good: 'bg-positive/10 text-positive',
+    bad: 'bg-negative-soft text-negative',
   } as const;
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>

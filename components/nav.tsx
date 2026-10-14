@@ -85,7 +85,7 @@ export function Nav() {
                 <span className="relative">
                   <Icon />
                   {href === '/calendar' && overdue > 0 ? (
-                    <span className="absolute -right-2 -top-1.5 inline-flex min-w-[1.05rem] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold text-white">
+                    <span className="absolute -right-2 -top-1.5 inline-flex min-w-[1.05rem] items-center justify-center rounded-full border border-action-edge bg-action px-1 text-[10px] font-semibold text-on-action">
                       {overdue}
                     </span>
                   ) : null}
