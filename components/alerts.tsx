@@ -21,7 +21,7 @@ const DISMISSED_KEY = 'trellis.dismissed-alerts';
 
 const TONE: Record<Alert['tone'], string> = {
   positive: 'border-positive/40 bg-positive/10',
-  negative: 'border-negative/40 bg-accent-soft',
+  negative: 'border-negative/40 bg-negative-soft',
   neutral: 'border-rule bg-paper-sunk',
 };
 
